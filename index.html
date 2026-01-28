@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Drifting Thoughts</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #000;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: white;
+            height: 100vh;
+            width: 100vw;
+            user-select: none; /* Prevent text selection on rapid clicks */
+        }
+
+        /* Container for the universe */
+        #universe {
+            position: relative;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* The Main Thought Circle */
+        .core-circle {
+            position: absolute;
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(255,255,255,0.15) 0%, rgba(255,255,255,0.05) 70%, transparent 100%);
+            border: 2px solid rgba(255,255,255,0.3);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            font-weight: bold;
+            font-size: 14px;
+            cursor: pointer;
+            box-shadow: 0 0 15px rgba(255,255,255,0.1);
+            transition: transform 0.1s ease, border-color 0.3s;
+            z-index: 10;
+            padding: 10px;
+            box-sizing: border-box;
+            /* Flashing animation defined in JS to randomize timing */
+        }
+
+        .core-circle:active {
+            transform: scale(0.95);
+            border-color: rgba(255,255,255,0.8);
+        }
+
+        /* The Sub-Thought (Idea) Bubbles */
+        .idea-bubble {
+            position: absolute;
+            background: rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(4px);
+            -webkit-backdrop-filter: blur(4px);
+            padding: 6px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            color: #ddd;
+            border: 1px solid rgba(255,255,255,0.2);
+            opacity: 0;
+            pointer-events: none; /* Let clicks pass through to background/circle */
+            transition: opacity 0.5s ease, transform 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            white-space: nowrap;
+            z-index: 5;
+        }
+
+        /* Keyframes for the "Breathing/Flashing" effect */
+        @keyframes flash {
+            0%, 100% { opacity: 0.3; box-shadow: 0 0 5px rgba(255,255,255,0.05); }
+            50% { opacity: 1; box-shadow: 0 0 25px rgba(255,255,255,0.4); }
+        }
+
+    </style>
+</head>
+<body>
+
+<div id="universe"></div>
+
+<script>
+    // Data definition (Translated to English)
+    const thoughtsData = [
+        {
+            title: "Morning Commute",
+            subs: ["Early Subway", "Frozen Hands (Bike)", "Slow Bus", "Walk & Late", "Carpool", "Forgot Card"]
+        },
+        {
+            title: "Lunch Plans",
+            subs: ["Cafeteria (Meh)", "Slow Delivery", "Cup Noodles", "Rice Ball", "Group Order", "Spicy Hot Pot"]
+        },
+        {
+            title: "Valorant Time",
+            subs: ["Which Agent?", "Bad Teammates", "Ranked Anxiety", "First Win Bonus", "Aim Feels Off", "Instalock Duelist"]
+        },
+        {
+            title: "Homework Anxiety",
+            subs: ["Deadline Near", "Can't Solve It", "Writing Slow", "Phone Distraction", "All-nighter", "Teacher Scolding"]
+        },
+        {
+            title: "Zoning Out",
+            subs: ["What's the Topic?", "Missed Notes", "What's he doing?", "Bird Outside", "I'm Hungry", "Brain Empty"]
+        },
+        {
+            title: "Bedtime Routine",
+            subs: ["Procrastinating", "Social Media", "Early Morning T_T", "Skincare Routine", "TikTok Scroll", "Insomnia"]
+        },
+        {
+            title: "Weekend Plans",
+            subs: ["Mall with Friends", "Home Gaming", "Library Study", "Park Walk", "New Boba Shop", "Sleep All Day"]
+        },
+        {
+            title: "Exam Stress",
+            subs: ["Missed Key Points", "Vocab Unfinished", "Mixed Formulas", "Skipped Mocks", "Brain Freeze", "Failing Fear"]
+        },
+        {
+            title: "Low Battery",
+            subs: ["No Powerbank", "No Outlets", "Laggy Low Power", "Payment Failed", "Missed Msg", "Can't Game"]
+        },
+        {
+            title: "Club Activities",
+            subs: ["Schedule Conflict", "Social Anxiety", "New Friends?", "Not Interested", "Free Food?", "Lazy/Resting"]
+        }
+    ];
+
+    const universe = document.getElementById('universe');
+    const circles = [];
+
+    // Utility: Get random integer
+    function getRandomInt(min, max) {
+        return Math.floor(Math.random() * (max - min + 1)) + min;
+    }
+
+    // Utility: Check if a new position overlaps with existing circles
+    function checkCollision(x, y, radius, existingList) {
+        for (let item of existingList) {
+            let dx = x - item.x;
+            let dy = y - item.y;
+            let distance = Math.sqrt(dx * dx + dy * dy);
+            // 15% buffer to ensure they aren't too close
+            if (distance < (radius + item.radius + 5)) { 
+                return true; 
+            }
+        }
+        return false;
+    }
+
+    // Initialize the Circles
+    function init() {
+        const universeRect = universe.getBoundingClientRect();
+        // Use percentages for positions so it scales, but calculate collision in roughly relative units (vw/vh)
+        
+        thoughtsData.forEach((data, index) => {
+            let placed = false;
+            let attempts = 0;
+            let posX, posY;
+
+            // Attempt to place circle without overlapping
+            while (!placed && attempts < 100) {
+                // Generate random position (keep away from extreme edges)
+                posX = getRandomInt(10, 85); // %
+                posY = getRandomInt(10, 85); // %
+                
+                // Approximate aspect ratio logic for collision
+                // We treat the screen as a 100x100 grid for simplicity of collision, 
+                // assuming circles are roughly 15 units wide effectively including margin.
+                if (!checkCollision(posX, posY, 12, circles)) {
+                    placed = true;
+                }
+                attempts++;
+            }
+
+            // Create DOM Element
+            const el = document.createElement('div');
+            el.className = 'core-circle';
+            el.innerText = data.title;
+            el.style.left = posX + '%';
+            el.style.top = posY + '%';
+            
+            // Randomize animation duration for "Flashing" effect
+            const duration = (Math.random() * 3 + 2).toFixed(2); // 2s to 5s
+            const delay = (Math.random() * 2).toFixed(2);
+            el.style.animation = `flash ${duration}s infinite alternate ease-in-out ${delay}s`;
+
+            // State object for this circle
+            const circleObj = {
+                el: el,
+                data: data,
+                x: posX,
+                y: posY,
+                radius: 12, // logic radius
+                clickCount: 0,
+                lastClickTime: 0,
+                subElements: [] // Will hold the 6 bubble DOM elements
+            };
+
+            // Click Interaction
+            el.addEventListener('click', (e) => {
+                // Prevent bubbling if necessary
+                e.stopPropagation();
+                
+                // Update state
+                circleObj.clickCount++;
+                circleObj.lastClickTime = Date.now();
+                
+                // Visual Feedback on Main Circle
+                el.style.borderColor = "#fff";
+                el.style.background = "rgba(255,255,255,0.25)";
+                setTimeout(() => {
+                    el.style.borderColor = "rgba(255,255,255,0.3)";
+                    el.style.background = ""; // revert to CSS rule
+                }, 150);
+
+                updateSubThoughts(circleObj);
+            });
+
+            circles.push(circleObj);
+            universe.appendChild(el);
+            
+            // Pre-create the sub-thought bubbles (hidden)
+            createSubThoughts(circleObj);
+        });
+    }
+
+    function createSubThoughts(circleObj) {
+        circleObj.data.subs.forEach((subText, i) => {
+            const bubble = document.createElement('div');
+            bubble.className = 'idea-bubble';
+            bubble.innerText = subText;
+            
+            // We append them to the universe, not the circle, so they don't rotate with the circle if we added rotation later
+            // We set their position relative to the circle center
+            universe.appendChild(bubble);
+            
+            circleObj.subElements.push({
+                el: bubble,
+                angle: (i * 60) * (Math.PI / 180), // 60 degrees in radians
+                active: false
+            });
+        });
+    }
+
+    function updateSubThoughts(circleObj) {
+        // Limit max active thoughts to 6
+        let activeCount = Math.min(circleObj.clickCount, 6);
+        
+        const radius = 90; // Distance from center of core circle (pixels)
+        
+        // Convert % position of parent to pixels for calculation
+        const rect = circleObj.el.getBoundingClientRect();
+        const centerX = rect.left + rect.width / 2;
+        const centerY = rect.top + rect.height / 2;
+
+        circleObj.subElements.forEach((sub, index) => {
+            if (index < activeCount) {
+                // Calculate position
+                const x = centerX + radius * Math.cos(sub.angle) - (sub.el.offsetWidth / 2);
+                const y = centerY + radius * Math.sin(sub.angle) - (sub.el.offsetHeight / 2);
+                
+                sub.el.style.left = `${x}px`;
+                sub.el.style.top = `${y}px`;
+                sub.el.style.opacity = 1;
+                sub.el.style.transform = `scale(1)`;
+                sub.active = true;
+            }
+        });
+    }
+
+    // The Game Loop for Decay
+    function gameLoop() {
+        const now = Date.now();
+        const decayTime = 2000; // 2 seconds without click begins decay
+
+        circles.forEach(circle => {
+            // Check if we need to reset/hide thoughts
+            if (circle.clickCount > 0 && (now - circle.lastClickTime > decayTime)) {
+                // Reset this circle
+                circle.clickCount = 0;
+                
+                // Hide all subs
+                circle.subElements.forEach(sub => {
+                    sub.el.style.opacity = 0;
+                    sub.el.style.transform = `scale(0.5)`;
+                    sub.active = false;
+                });
+            }
+            
+            // Recalculate positions if window resized (optional, but keeps bubbles attached)
+            // For simplicity in this script, we just leave them. 
+            // If the user clicks again, they snap to the new correct position.
+        });
+
+        requestAnimationFrame(gameLoop);
+    }
+
+    // Handle Window Resize to reposition active bubbles immediately
+    window.addEventListener('resize', () => {
+        circles.forEach(circle => {
+            if (circle.clickCount > 0) {
+                 updateSubThoughts(circle);
+            }
+        });
+    });
+
+    // Start
+    init();
+    gameLoop();
+
+</script>
+</body>
+</html>
