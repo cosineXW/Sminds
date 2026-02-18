@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Perspective Engine</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Inter', sans-serif; background: #f9f9f9; }
+        
+        /* 搜索引擎风格 UI */
+        #searchContainer {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 100%;
+            max-width: 600px;
+            z-index: 1000;
+            text-align: center;
+            transition: all 0.5s ease-in-out;
+        }
+
+        /* 搜索后的状态：移动到顶部 */
+        body.has-results #searchContainer {
+            top: 60px;
+            max-width: 800px;
+        }
+
+        h1.logo {
+            font-size: 3rem;
+            color: #333;
+            margin-bottom: 20px;
+            letter-spacing: -1px;
+            transition: all 0.3s ease;
+        }
+        
+        body.has-results h1.logo {
+            font-size: 1.5rem;
+            display: inline-block;
+            margin-right: 20px;
+            margin-bottom: 0;
+            vertical-align: middle;
+        }
+
+        .input-group {
+            position: relative;
+            display: inline-block;
+            width: 100%;
+        }
+
+        body.has-results .input-group {
+            width: 60%;
+            vertical-align: middle;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 15px 25px;
+            font-size: 18px;
+            border: 1px solid #dfe1e5;
+            border-radius: 24px;
+            box-shadow: 0 1px 6px rgba(32,33,36,.28);
+            outline: none;
+            box-sizing: border-box;
+            transition: box-shadow 0.2s;
+        }
+
+        input[type="text"]:focus {
+            box-shadow: 0 1px 6px rgba(32,33,36,.5);
+        }
+
+        /* 加载状态提示 */
+        #status {
+            margin-top: 15px;
+            color: #666;
+            font-size: 14px;
+            min-height: 20px;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        
+        body.has-results #status {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(255,255,255,0.9);
+            padding: 5px 15px;
+            border-radius: 15px;
+        }
+
+        /* 悬停显示的观点气泡 */
+        #perspectiveTooltip {
+            position: absolute;
+            pointer-events: none;
+            background: rgba(0, 0, 0, 0.85);
+            color: white;
+            padding: 12px 16px;
+            border-radius: 8px;
+            max-width: 300px;
+            font-size: 14px;
+            line-height: 1.4;
+            z-index: 2000;
+            opacity: 0;
+            transition: opacity 0.2s;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            transform: translate(-50%, -120%); /* 默认在鼠标上方 */
+        }
+
+        .type-tag {
+            display: inline-block;
+            background: #0969da;
+            color: white;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 10px;
+            margin-bottom: 4px;
+            text-transform: uppercase;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="searchContainer">
+        <h1 class="logo">Perspective<span style="color:#0969da">Search</span></h1>
+        <div class="input-group">
+            <input type="text" id="searchInput" placeholder="Enter a topic (e.g., AI Art, Climate Change)..." autocomplete="off">
+        </div>
+        <div id="status">Ready to search</div>
+    </div>
+
+    <div id="perspectiveTooltip"></div>
+
+    <script type="module">
+        import { UMAP } from "https://cdn.skypack.dev/umap-js";
+
+        // === 全局变量 ===
+        let canvas;
+        let ctx;
+        let people = {}; // 存储所有用户数据 {id: {name, handle, desc, type, x, y, img...}}
+        let drawOrder = []; // 渲染顺序
+        let hoveredPersonID = null;
+        let isSearching = false;
+        
+        // 你的 Replicate Proxy Token (如果需要)
+        const authToken = ""; 
+        const replicateProxy = "https://itp-ima-replicate-proxy.web.app/api/create_n_get";
+
+        // === 初始化 ===
+        window.onload = () => {
+            initCanvas();
+            setupUI();
+            animate();
+            
+            // 尝试加载本地存储（可选，如果想保留上次搜索结果）
+            const saved = localStorage.getItem('perspective_people');
+            if(saved) {
+                // 如果有旧数据，直接进入结果模式
+                people = JSON.parse(saved);
+                // 恢复图片对象
+                for(let id in people) {
+                   reloadImage(people[id]);
+                }
+                drawOrder = Object.keys(people);
+                if(drawOrder.length > 0) {
+                    document.body.classList.add('has-results');
+                    runUMAP(); // 重新计算布局以适应屏幕
+                }
+            }
+        };
+
+        function setupUI() {
+            const input = document.getElementById('searchInput');
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    const topic = input.value.trim();
+                    if (topic) startSearch(topic);
+                }
+            });
+        }
+
+        function initCanvas() {
+            canvas = document.createElement('canvas');
+            canvas.style.position = 'absolute';
+            canvas.style.top = '0';
+            canvas.style.left = '0';
+            canvas.style.zIndex = '0'; // 在 UI 下层
+            document.body.appendChild(canvas);
+            
+            resizeCanvas();
+            window.addEventListener('resize', () => {
+                resizeCanvas();
+                // 窗口改变时重新映射坐标
+                if(Object.keys(people).length > 0) projectNormalizedToCanvas(); 
+            });
+
+            // 交互事件
+            canvas.addEventListener('mousemove', handleMouseMove);
+            canvas.addEventListener('click', handleClick);
+        }
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            ctx = canvas.getContext('2d');
+        }
+
+        // === 核心逻辑：执行搜索 ===
+        async function startSearch(topic) {
+            if(isSearching) return;
+            isSearching = true;
+            updateStatus("Analyzing topic dimensions...", 1);
+            document.body.classList.add('has-results'); // 改变 UI 布局
+
+            try {
+                // 1. 清空旧数据
+                people = {};
+                drawOrder = [];
+                localStorage.removeItem('perspective_people');
+
+                // 2. 构造 Prompt (藏在代码幕后)
+                // 这里我们把用户的需求稍微扩展一下，让 AI 同时生成名字和昵称，方便展示
+                const systemPrompt = `You are a social data generator. 
+                1. Create a flat JSON object with a list of 15 items.
+                2. Each item represents a person with a perspective on the topic provided.
+                3. The list should be organized into 5 different types of people (3 people per type).
+                4. Fields required for each item: 
+                   - "description": (short perspective, max 20 words)
+                   - "type": (the category of person)
+                   - "name": (a realistic full name)
+                   - "handle": (a social media username, starting with @)
+                   - "image_prompt": (a visual description of their face/avatar style)
+                `;
+                
+                const fullPrompt = `give me a flat json object with 15 short descriptions of perspectives with about the topic of "${topic}". Please only use the fields description, type, name, handle, and image_prompt.`;
+
+                updateStatus("Generating 15 distinct personas...", 1);
+
+                // 3. 调用 LLM 生成数据
+                const llmData = await fetchAI('openai/gpt-5-structured', {
+                    prompt: fullPrompt,
+                    system_prompt: systemPrompt
+                });
+                
+                let results = llmData.output.json_output;
+                // 处理可能返回对象而不是数组的情况
+                if (!Array.isArray(results) && results.items) results = results.items;
+                if (!Array.isArray(results)) results = Object.values(results);
+
+                console.log("LLM Results:", results);
+
+                // 4. 并行处理：获取文本嵌入 + 生成图片
+                updateStatus("Calculating semantic map & Generating avatars...", 1);
+
+                // A. 准备文本用于 Embedding (用于 UMAP 定位)
+                // 我们使用 "Type + Description" 来做嵌入，这样观点相似的人会靠在一起
+                const textForEmbedding = results.map(r => `${r.type}: ${r.description}`);
+                
+                // B. 发起 Embedding 请求
+                const embedPromise = fetchAI('beautyyuyanli/multilingual-e5-large:a06276a89f1a902d5fc225a9ca32b6e8e6292b7f3b136518878da97c458e2bad', {
+                    texts: JSON.stringify(textForEmbedding)
+                });
+
+                // C. 发起图片生成请求 (并行 15 个，注意浏览器并发限制，这里简化处理，实际可能需要队列)
+                // 为了演示流畅性，我们先创建占位符对象
+                const imagePromises = results.map(async (p, index) => {
+                    const id = `user_${index}`;
+                    people[id] = {
+                        ...p,
+                        id: id,
+                        img: null, // 图片稍后加载
+                        imageLoading: true
+                    };
+                    drawOrder.push(id);
+
+                    // 异步生成单张图片
+                    try {
+                        const imgRes = await fetchAI('google/imagen-4-fast', {
+                            prompt: "square avatar, close up face, " + p.image_prompt
+                        });
+                        const imgUrl = imgRes.output;
+                        
+                        // 加载图片对象
+                        const imgObj = new Image();
+                        imgObj.crossOrigin = "anonymous";
+                        imgObj.src = imgUrl;
+                        imgObj.onload = () => { people[id].imageLoading = false; };
+                        people[id].img = imgObj;
+                        people[id].imageURL = imgUrl; // 存 URL 用于序列化
+                        
+                        return true;
+                    } catch(e) {
+                        console.error("Image gen failed for", id);
+                        people[id].imageLoading = false;
+                        return false;
+                    }
+                });
+
+                // 5. 等待 Embedding 完成 (这决定了位置，比图片更重要)
+                const embedRes = await embedPromise;
+                const embeddings = embedRes.output;
+
+                // 将 Embedding 存入对象
+                results.forEach((_, i) => {
+                    const id = `user_${i}`;
+                    people[id].embedding = embeddings[i];
+                });
+
+                // 6. 运行 UMAP 计算坐标
+                runUMAP();
+                
+                updateStatus(`Found ${results.length} perspectives. Rendering...`, 0); // Hide after a bit
+                setTimeout(() => { document.getElementById('status').style.opacity = 0; }, 3000);
+
+                // 保存到本地
+                localStorage.setItem('perspective_people', JSON.stringify(people));
+
+            } catch (e) {
+                console.error(e);
+                updateStatus("Error: " + e.message, 1);
+            } finally {
+                isSearching = false;
+            }
+        }
+
+        // === AI API 通用调用函数 ===
+        async function fetchAI(model, input) {
+            const options = {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Accept: "application/json",
+                    'Authorization': `Bearer ${authToken}`,
+                },
+                body: JSON.stringify({ model, input }),
+            };
+            const res = await fetch(replicateProxy, options);
+            return await res.json();
+        }
+
+        // === UMAP 逻辑 (Code A 的灵魂) ===
+        function runUMAP() {
+            const ids = Object.keys(people);
+            if(ids.length === 0) return;
+
+            // 提取向量
+            const embeddings = ids.map(id => people[id].embedding);
+
+            // 配置 UMAP
+            const umap = new UMAP({
+                nNeighbors: 4, // 小数据集用小邻居数
+                minDist: 0.5,
+                nComponents: 2,
+                spread: 1.0,
+            });
+
+            const fittings = umap.fit(embeddings);
+            
+            // 归一化并存入 people 对象
+            const normalized = normalize(fittings);
+            
+            ids.forEach((id, i) => {
+                people[id].normalizedX = normalized[i][0];
+                people[id].normalizedY = normalized[i][1];
+            });
+
+            projectNormalizedToCanvas();
+        }
+
+        function normalize(vectors) {
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            vectors.forEach(v => {
+                if (v[0] < minX) minX = v[0];
+                if (v[0] > maxX) maxX = v[0];
+                if (v[1] < minY) minY = v[1];
+                if (v[1] > maxY) maxY = v[1];
+            });
+            return vectors.map(v => [
+                (v[0] - minX) / (maxX - minX || 1),
+                (v[1] - minY) / (maxY - minY || 1)
+            ]);
+        }
+
+        function projectNormalizedToCanvas() {
+            const margin = 100; // 留白，防止贴边
+            const w = canvas.width - margin * 2;
+            const h = canvas.height - margin * 2; // 顶部留多一点给搜索框
+            const topOffset = 120; 
+
+            for(let id in people) {
+                const p = people[id];
+                if(p.normalizedX !== undefined) {
+                    p.x = margin + p.normalizedX * w;
+                    p.y = topOffset + p.normalizedY * (h - topOffset);
+                    p.w = 180; // 卡片宽度
+                    p.h = 220; // 卡片高度 (含底部文字区)
+                }
+            }
+        }
+
+        // === 渲染循环 (Code B 的肉体) ===
+        function animate() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // 绘制连线 (可选：连接相似的人？暂时留白保持干净)
+
+            // 绘制卡片
+            drawOrder.forEach(id => {
+                const p = people[id];
+                if(!p) return;
+                
+                // 拍立得样式
+                ctx.save();
+                
+                // 阴影
+                ctx.shadowColor = 'rgba(0,0,0,0.15)';
+                ctx.shadowBlur = 15;
+                ctx.shadowOffsetY = 5;
+
+                // 卡片背景
+                ctx.fillStyle = '#fff';
+                ctx.beginPath();
+                ctx.roundRect(p.x, p.y, p.w, p.h, 4);
+                ctx.fill();
+                ctx.shadowColor = 'transparent'; // 停止阴影
+
+                // 绘制图片
+                const imgSize = p.w - 20; // 左右各留10px
+                const imgX = p.x + 10;
+                const imgY = p.y + 10;
+                
+                if (p.img && !p.imageLoading) {
+                    try {
+                        ctx.drawImage(p.img, imgX, imgY, imgSize, imgSize);
+                    } catch(e) {}
+                } else {
+                    // Loading 占位
+                    ctx.fillStyle = '#eee';
+                    ctx.fillRect(imgX, imgY, imgSize, imgSize);
+                    ctx.fillStyle = '#ccc';
+                    ctx.font = '12px sans-serif';
+                    ctx.fillText("Loading AI...", imgX + 50, imgY + imgSize/2);
+                }
+
+                // 底部文字 (名字和 Handle)
+                ctx.fillStyle = '#333';
+                ctx.font = 'bold 14px Inter';
+                ctx.fillText(p.name, imgX, imgY + imgSize + 20);
+                
+                ctx.fillStyle = '#888';
+                ctx.font = '12px Inter';
+                ctx.fillText(p.handle, imgX, imgY + imgSize + 36);
+
+                // 高亮边框 (Hover)
+                if (hoveredPersonID === id) {
+                    ctx.lineWidth = 2;
+                    ctx.strokeStyle = '#0969da';
+                    ctx.strokeRect(p.x, p.y, p.w, p.h);
+                }
+
+                ctx.restore();
+            });
+
+            requestAnimationFrame(animate);
+        }
+
+        // === 交互逻辑 ===
+        function handleMouseMove(e) {
+            const rect = canvas.getBoundingClientRect();
+            const mx = e.clientX - rect.left;
+            const my = e.clientY - rect.top;
+            
+            let hit = null;
+            // 倒序检测，优先选中最上层的
+            for(let i = drawOrder.length - 1; i >= 0; i--) {
+                const id = drawOrder[i];
+                const p = people[id];
+                if (mx >= p.x && mx <= p.x + p.w && my >= p.y && my <= p.y + p.h) {
+                    hit = id;
+                    break;
+                }
+            }
+            
+            hoveredPersonID = hit;
+            canvas.style.cursor = hit ? 'pointer' : 'default';
+            
+            updateTooltip(hit, e.clientX, e.clientY);
+        }
+
+        function handleClick(e) {
+            if(hoveredPersonID) {
+                // 点击提到最前
+                const idx = drawOrder.indexOf(hoveredPersonID);
+                if(idx > -1) {
+                    drawOrder.splice(idx, 1);
+                    drawOrder.push(hoveredPersonID);
+                }
+            }
+        }
+
+        function updateTooltip(id, mouseX, mouseY) {
+            const el = document.getElementById('perspectiveTooltip');
+            if(!id) {
+                el.style.opacity = 0;
+                return;
+            }
+            const p = people[id];
+            el.innerHTML = `
+                <span class="type-tag">${p.type}</span><br>
+                <strong>${p.name}</strong> <span style="color:#aaa">${p.handle}</span>
+                <p style="margin-top:8px; margin-bottom:0; color:#ddd">"${p.description}"</p>
+            `;
+            el.style.left = mouseX + 'px';
+            el.style.top = (mouseY - 20) + 'px'; // 稍微向上一点
+            el.style.opacity = 1;
+        }
+
+        function updateStatus(text, opacity) {
+            const el = document.getElementById('status');
+            el.textContent = text;
+            el.style.opacity = opacity;
+        }
+        
+        // 辅助：从 localStorage 恢复图片时
+        function reloadImage(p) {
+            if(p.imageURL) {
+                const img = new Image();
+                img.crossOrigin = "anonymous";
+                img.src = p.imageURL;
+                p.img = img;
+                p.imageLoading = false;
+            }
+        }
+
+    </script>
+</body>
+</html>
