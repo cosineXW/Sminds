@@ -2,27 +2,23 @@ let handPose;
 let video;
 let hands = [];
 let p5Canvas; 
-
-// 手部骨架连接点
+ 
 let handArray = [
     1, 2, 3, 4, 3, 2, 5, 6, 7, 8, 7, 6, 5, 9, 10, 11, 12, 11, 10, 9, 13, 14, 15, 16, 15, 14, 13, 17, 18, 19, 20, 19, 18, 17, 0
 ];
 
-// 交互对象列表
 let visualObjects = [];
 let currentObject = -1;
 let isDragging = false;
 let dragOffsetX = 0;
 let dragOffsetY = 0;
 
-// --- 状态控制 ---
 let isCountingDown = false;
 let countdownTimer = 0;
 let isProcessing = false; 
 let isFrozen = false;    
 let frozenImage;         
 
-// API 设置 (Replicate 代理)
 const proxyUrl = "https://itp-ima-replicate-proxy.web.app/api/create_n_get"; 
 
 function preload() {
@@ -35,31 +31,24 @@ function setup() {
     video.size(width, height);
     video.hide();
     
-    // 开始检测手势
     handPose.detectStart(video, gotHands);
     
-    // --- 这里就是之前报错的地方，现在下面的函数定义补全了就好了 ---
     p5Canvas.canvas.addEventListener('mousedown', handleMouseDown);
     p5Canvas.canvas.addEventListener('mousemove', handleMouseMove);
     p5Canvas.canvas.addEventListener('mouseup', handleMouseUp);
 }
 
 function gotHands(results) {
-    // 只有在非定格状态下更新手势
     if (!isFrozen) {
         hands = results;
     }
 }
 
-// --- 专门提取出来的：只画场景（不画UI文字） ---
 function drawSceneOnly() {
-    // 1. 画背景
     if (isFrozen && frozenImage) {
         image(frozenImage, 0, 0, width, height);
     } else {
         background(0); // 纯黑背景，适合星空
-        
-        // 2. 画骨架 (仅在非定格且非冻结图模式下)
         push();
         stroke(255);
         strokeWeight(4);
@@ -93,10 +82,8 @@ function drawSceneOnly() {
 }
 
 function draw() {
-    // 1. 先画纯净的场景
     drawSceneOnly();
 
-    // 2. 再在顶层画 UI 文字 (截图时不会包含这些)
     fill(255);
     noStroke();
     textAlign(CENTER, CENTER);
@@ -132,10 +119,8 @@ function draw() {
     }
 }
 
-// --- 交互逻辑 ---
 
 function keyPressed() {
-    // 1. 如果是定格状态，按 Enter 重置所有
     if (isFrozen && key === 'Enter') {
         isFrozen = false;     
         isProcessing = false; 
@@ -181,7 +166,6 @@ async function captureCanvasAndSend() {
     
     let canvasData = p5Canvas.canvas.toDataURL("image/png");
 
-    // 这里是你的 Prompt
     let promptText = "To generate an animal constellation map, it is necessary to also draw the faint outline of the animal's silhouette.";    
     
     const data = {
