@@ -185,7 +185,6 @@ async function captureCanvasAndSend() {
     let promptText = "To generate an animal constellation map, it is necessary to also draw the faint outline of the animal's silhouette.";    
     
     const data = {
-        // 使用 SDXL 模型 (比 chatgpt 更适合画图)
         version: "39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
         
         input: {
