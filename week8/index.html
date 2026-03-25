@@ -92,6 +92,7 @@ const handArray = [
 ];
 let handLineMeshes = [null, null]; // outline lines for both hands
 let handGlows = [null, null]; // glow sprites for both hands
+let handRadiusRings = [null, null]; // influence radius circles for both hands
 
 const clock = new THREE.Clock();
 const statusEl = document.getElementById('status');
@@ -207,6 +208,22 @@ function createHandOutline() {
         glow.visible = false;
         scene.add(glow);
         handGlows[h] = glow;
+
+        // Influence radius ring
+        const ringGeo = new THREE.RingGeometry(7.8, 8, 48);
+        const ringMat = new THREE.MeshBasicMaterial({
+            color: 0x88ddff,
+            transparent: true,
+            opacity: 0.15,
+            side: THREE.DoubleSide,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false
+        });
+        const ring = new THREE.Mesh(ringGeo, ringMat);
+        ring.rotation.x = -Math.PI / 2; // lay flat in XZ plane
+        ring.visible = false;
+        scene.add(ring);
+        handRadiusRings[h] = ring;
     }
 }
 
@@ -355,15 +372,16 @@ function createFishes() {
         fishes.push({
             group: group,
             tail: tail,
-            // noise 参数：每条鱼有独特的 offset
+            // Noise params: each fish has a unique offset
             noiseOffsetX: Math.random() * 100,
             noiseOffsetZ: Math.random() * 100,
             noiseOffsetY: Math.random() * 100,
             speed: 0.15 + Math.random() * 0.2,
             baseY: group.position.y,
-            // 手部交互
+            // Hand interaction
             pushVelocity: new THREE.Vector3(0, 0, 0),
-            pushDecay: 0.96
+            pushDecay: 0.93,
+            scared: 0  // 0~1, decays over time, drives tail speed + bubbles
         });
     }
 }
@@ -386,19 +404,14 @@ function createLotusLeaves() {
             const cz = (gz - gridSize / 2 + 0.5) * cellSize + (Math.random() - 0.5) * cellSize * 0.7;
             const distFromCenter = Math.sqrt(cx * cx + cz * cz);
 
-            // 根据离中心距离决定大小和是否可交互
-            // 近处（dist < 12）：大荷叶，可交互
-            // 中间（12~25）：中等
-            // 远处（>25）：小荷叶，装饰
+            // Size and interactivity based on distance from center
+            // Near (dist < 25): large leaves, interactive
+            // Far (>25): small decorative leaves
             let radius, opacity, interactive;
             if (distFromCenter < 12) {
-                radius = 3.0 + Math.random() * 3.5;  // 3~6.5
-                opacity = 0.7 + Math.random() * 0.1;
+                radius = 2.5 + Math.random() * 4.0;  // 2.5~6.5
+                opacity = 0.5 + Math.random() * 0.25;
                 interactive = true;
-            } else if (distFromCenter < 25) {
-                radius = 1.5 + Math.random() * 2.0;  // 1.5~3.5
-                opacity = 0.4 + Math.random() * 0.15;
-                interactive = false;
             } else {
                 radius = 0.6 + Math.random() * 1.2;  // 0.6~1.8
                 opacity = 0.2 + Math.random() * 0.1;
@@ -704,7 +717,7 @@ function updateHeadTracking(t) {
 
     // 2. 映射到目标平移量
     const mappedTarget = clamp(
-        mapRange(smoothedRatio, -0.2, 0.2, -MAX_PAN_DISTANCE, MAX_PAN_DISTANCE),
+        mapRange(smoothedRatio, 0.2, -0.2, -MAX_PAN_DISTANCE, MAX_PAN_DISTANCE),
         -MAX_PAN_DISTANCE, MAX_PAN_DISTANCE
     );
 
@@ -742,7 +755,7 @@ function getHandScale(landmarks, handIndex) {
     // 用手腕(0)到中指根(9)的距离——手掌骨骼长度，不随手指张合变化
     const wrist = landmarks[0], midBase = landmarks[9];
     const a = Math.sqrt((wrist.x - midBase.x) ** 2 + (wrist.y - midBase.y) ** 2);
-    const scale = Math.max(mapRange(a, 0.05, 0.15, 1.2, 0.3), 0.1);
+    const scale = Math.max(mapRange(a, 0.05, 0.15, 1.2, 0.6), 0.5);
     debugEl.innerHTML += `<br>手${handIndex}: a=${a.toFixed(3)} scale=${scale.toFixed(2)}`;
     return scale;
 }
@@ -859,12 +872,16 @@ function updateFishes(t) {
         const facing = Math.atan2(moveZ + fish.pushVelocity.z, moveX + fish.pushVelocity.x);
         g.rotation.y += (facing - g.rotation.y) * 0.05;
 
-        // 尾巴摆动
+        // Tail wagging: faster + wider when scared
         if (fish.tail) {
-            fish.tail.rotation.y = Math.sin(t * 4 + fish.noiseOffsetX) * 0.4;
+            const tailFreq = 4 + fish.scared * 12;  // normal 4, scared up to 16
+            const tailAmp = 0.4 + fish.scared * 0.5; // normal 0.4, scared up to 0.9
+            fish.tail.rotation.y = Math.sin(t * tailFreq + fish.noiseOffsetX) * tailAmp;
         }
 
-        // 手部交互：靠近时被推开（检查每只手）
+        // Hand interaction: fish scatter when hand is near
+        const FISH_INTERACT_RADIUS = 8;
+        fish.scared *= 0.96; // decay scared state
         if (handActive) {
             for (let h = 0; h < activeHandCount; h++) {
                 const hp = handWorldPositions[h];
@@ -872,13 +889,14 @@ function updateFishes(t) {
                 const dz = g.position.z - hp.z;
                 const dy = g.position.y - hp.y;
                 const dist = Math.sqrt(dx * dx + dz * dz + dy * dy);
-                if (dist < 5) {
-                    const force = (5 - dist) / 5 * 0.3;
+                if (dist < FISH_INTERACT_RADIUS) {
+                    const force = (FISH_INTERACT_RADIUS - dist) / FISH_INTERACT_RADIUS * 0.8;
                     fish.pushVelocity.set(
                         dx / dist * force,
                         dy / dist * force * 0.3,
                         dz / dist * force
                     );
+                    fish.scared = Math.min(fish.scared + 0.3, 1.0);
                 }
             }
         }
