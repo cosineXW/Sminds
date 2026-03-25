@@ -113,9 +113,9 @@ window.onload = async () => {
 // ============================================================
 function initThreeJS() {
     scene = new THREE.Scene();
-    // Deep blue underwater background
-    scene.background = new THREE.Color(0x051525);
-    scene.fog = new THREE.FogExp2(0x051525, 0.018);
+    // Shallow underwater background — brighter, more sunlit
+    scene.background = new THREE.Color(0x0a2a3a);
+    scene.fog = new THREE.FogExp2(0x0a2a3a, 0.014);
 
     // Camera group: simulates head turning left/right while lying down
     cameraGroup = new THREE.Group();
@@ -134,13 +134,19 @@ function initThreeJS() {
     renderer.setSize(window.innerWidth, window.innerHeight);
     document.body.appendChild(renderer.domElement);
 
-    // Ambient light + directional light from above
-    const ambientLight = new THREE.AmbientLight(0x1a3a5a, 0.6);
+    // Ambient light — warmer and brighter for shallow water
+    const ambientLight = new THREE.AmbientLight(0x3a6a8a, 0.8);
     scene.add(ambientLight);
 
-    const dirLight = new THREE.DirectionalLight(0xaaddff, 0.8);
-    dirLight.position.set(0, 50, 0);
+    // Strong sunlight from above
+    const dirLight = new THREE.DirectionalLight(0xffeedd, 1.2);
+    dirLight.position.set(2, 50, 1);
     scene.add(dirLight);
+
+    // Secondary warm fill light to simulate sunlight scattering
+    const warmLight = new THREE.DirectionalLight(0xffcc88, 0.4);
+    warmLight.position.set(-5, 40, -3);
+    scene.add(warmLight);
 
     window.addEventListener('resize', () => {
         camera.aspect = window.innerWidth / window.innerHeight;
@@ -245,27 +251,30 @@ function createWaterSurface() {
 
 // --- 2b. God Rays (semi-realistic light shafts) ---
 function createGodRays() {
-    const rayCount = 7;
+    const rayCount = 12;
     for (let i = 0; i < rayCount; i++) {
-        const width = 2 + Math.random() * 4;
-        const height = 30 + Math.random() * 15;
+        const width = 2 + Math.random() * 5;
+        const height = 25 + Math.random() * 10;
         const geo = new THREE.PlaneGeometry(width, height);
+        // Mix of warm golden and cool blue-white rays
+        const isWarm = Math.random() > 0.4;
+        const rayColor = isWarm ? 0xffeebb : 0xddeeff;
         const mat = new THREE.MeshBasicMaterial({
-            color: 0xddeeff,
+            color: rayColor,
             transparent: true,
-            opacity: 0.04 + Math.random() * 0.06,
+            opacity: 0.06 + Math.random() * 0.08,
             side: THREE.DoubleSide,
             depthWrite: false,
             blending: THREE.AdditiveBlending
         });
         const ray = new THREE.Mesh(geo, mat);
 
-        // Spread above the viewer
+        // Spread above the viewer — closer for shallow water feel
         const angle = (i / rayCount) * Math.PI * 2;
-        const radius = 5 + Math.random() * 20;
+        const radius = 3 + Math.random() * 15;
         ray.position.set(
             Math.cos(angle) * radius,
-            12 + Math.random() * 8,
+            10 + Math.random() * 10,
             Math.sin(angle) * radius
         );
         // Slightly tilted, not perfectly vertical
@@ -374,13 +383,13 @@ function createLotusLeaves() {
     // Grid + random offset ensures even spread, no clustering
     // Divide XZ plane into grid cells, place one leaf per cell
     const gridSize = 8;   // 8x8 grid
-    const cellSize = 8;   // 8 world units per cell
+    const cellSize = 10;  // 10 world units per cell — more breathing room
     const totalLeaves = [];
 
     for (let gx = 0; gx < gridSize; gx++) {
         for (let gz = 0; gz < gridSize; gz++) {
-            // Skip some cells to avoid overcrowding (~60% fill rate)
-            if (Math.random() > 0.6) continue;
+            // Skip more cells to reduce overlap (~40% fill rate)
+            if (Math.random() > 0.4) continue;
 
             // Cell center + random offset
             const cx = (gx - gridSize / 2 + 0.5) * cellSize + (Math.random() - 0.5) * cellSize * 0.7;
@@ -391,8 +400,8 @@ function createLotusLeaves() {
             // Near (dist < 25): large leaves, interactive
             // Far (>25): small decorative leaves
             let radius, opacity, interactive;
-            if (distFromCenter < 12) {
-                radius = 2.5 + Math.random() * 4.0;  // 2.5~6.5
+            if (distFromCenter < 25) {
+                radius = 2.0 + Math.random() * 2.5;  // 2~4.5, fits within 10-unit cells
                 opacity = 0.5 + Math.random() * 0.25;
                 interactive = true;
             } else {
@@ -488,10 +497,10 @@ function createWeeds() {
     // Near: large interactive seaweed, tall and thick
     // Mid: medium seaweed
     // Far: small decorative seaweed, short and translucent
+    // Two layers only: near interactive + far decorative, similar depth range as lotus leaves
     const layers = [
-        { count: 5, heightMin: 6, heightMax: 12, stalkMin: 3, stalkMax: 5, thickness: 0.08, distMin: 3,  distMax: 12, opac: 0.8, interactive: true },
-        { count: 5, heightMin: 3, heightMax: 7,  stalkMin: 2, stalkMax: 4, thickness: 0.05, distMin: 10, distMax: 22, opac: 0.55, interactive: false },
-        { count: 6, heightMin: 1.5, heightMax: 4, stalkMin: 1, stalkMax: 3, thickness: 0.03, distMin: 20, distMax: 40, opac: 0.3, interactive: false },
+        { count: 10, heightMin: 5, heightMax: 11, stalkMin: 3, stalkMax: 5, thickness: 0.07, distMin: 3,  distMax: 18, opac: 0.75, interactive: true },
+        { count: 12, heightMin: 2, heightMax: 6,  stalkMin: 2, stalkMax: 4, thickness: 0.04, distMin: 14, distMax: 28, opac: 0.3, interactive: false },
     ];
 
     layers.forEach(layer => {
