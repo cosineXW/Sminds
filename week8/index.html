@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>水底初醒</title>
+    <title>Awakening Underwater</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { overflow: hidden; background: #000; font-family: sans-serif; color: white; }
@@ -20,21 +20,21 @@
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://unpkg.com/ml5@0.12.2/dist/ml5.min.js"></script>
-    <!-- MediaPipe Hands: 支持双手检测 (ml5 handpose 只能检测单手) -->
+    <!-- MediaPipe Hands: supports dual hand detection (ml5 handpose only detects one hand) -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
 </head>
 <body>
     <div id="ui">
-        <h3 id="status">正在加载 AI 模型...</h3>
-        <p>左右转头 → 水平移动视角</p>
-        <p>伸手 → 拨动水草荷叶、改变鱼的方向</p>
+        <h3 id="status">Loading AI models...</h3>
+        <p>Turn head left/right → Pan view horizontally</p>
+        <p>Reach out hand → Push seaweed/lotus leaves, change fish direction</p>
         <p id="debug"></p>
     </div>
     <video id="webcam" playsinline autoplay width="640" height="480"></video>
 
 <script>
 // ============================================================
-//  Perlin Noise (经典实现)
+//  Perlin Noise (classic implementation)
 // ============================================================
 const PerlinNoise = (() => {
     const p = [];
@@ -65,40 +65,40 @@ const PerlinNoise = (() => {
 })();
 
 // ============================================================
-//  全局变量
+//  Global variables
 // ============================================================
 let scene, camera, cameraGroup, renderer;
 let faceMesh, video;
 let facePredictions = [];
 let isFaceReady = false, isHandReady = false;
-// MediaPipe Hands 结果：multiHandLandmarks 是数组，每只手21个归一化坐标(0~1)
+// MediaPipe Hands results: multiHandLandmarks is an array, 21 normalized coords (0~1) per hand
 let mpHandResults = null;
 
-// 生态对象
+// Scene objects
 let fishes = [];
 let weeds = [];
 let lotusLeaves = [];
 let godRays = [];
-// 支持双手：每只手各自的世界坐标和状态
+// Dual hand support: each hand has its own world coordinates and state
 let handWorldPositions = [new THREE.Vector3(), new THREE.Vector3()];
 let handActive = false;
 let activeHandCount = 0;
 
-// 手部轮廓绘制（参考 handArray 路径：沿手指描边再返回）
+// Hand outline rendering (using handArray path: trace along fingers and back)
 const handArray = [
     1, 2, 3, 4, 3, 2, 5, 6, 7, 8, 7, 6, 5,
     9, 10, 11, 12, 11, 10, 9, 13, 14, 15, 16,
     15, 14, 13, 17, 18, 19, 20, 19, 18, 17, 0
 ];
-let handLineMeshes = [null, null]; // 两只手的轮廓线
-let handGlows = [null, null]; // 两只手的光晕
+let handLineMeshes = [null, null]; // outline lines for both hands
+let handGlows = [null, null]; // glow sprites for both hands
 
 const clock = new THREE.Clock();
 const statusEl = document.getElementById('status');
 const debugEl = document.getElementById('debug');
 
 // ============================================================
-//  启动
+//  Startup
 // ============================================================
 window.onload = async () => {
     initThreeJS();
@@ -109,20 +109,20 @@ window.onload = async () => {
 };
 
 // ============================================================
-//  1. Three.js 初始化 — 仰卧水底视角
+//  1. Three.js initialization — supine underwater perspective
 // ============================================================
 function initThreeJS() {
     scene = new THREE.Scene();
-    // 深蓝水底背景
+    // Deep blue underwater background
     scene.background = new THREE.Color(0x051525);
     scene.fog = new THREE.FogExp2(0x051525, 0.018);
 
-    // 相机组：模拟躺平后头部左右转动
+    // Camera group: simulates head turning left/right while lying down
     cameraGroup = new THREE.Group();
     scene.add(cameraGroup);
 
     camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.1, 200);
-    // 仰卧：相机朝正上方 (+Y)
+    // Supine: camera facing straight up (+Y)
     camera.rotation.order = 'YXZ';
     camera.rotation.x = Math.PI / 2;
     camera.position.set(0, 0, 0);
@@ -134,7 +134,7 @@ function initThreeJS() {
     renderer.setSize(window.innerWidth, window.innerHeight);
     document.body.appendChild(renderer.domElement);
 
-    // 环境光 + 从上方打下来的方向光
+    // Ambient light + directional light from above
     const ambientLight = new THREE.AmbientLight(0x1a3a5a, 0.6);
     scene.add(ambientLight);
 
@@ -150,7 +150,7 @@ function initThreeJS() {
 }
 
 // ============================================================
-//  2. 搭建水底场景
+//  2. Build underwater scene
 // ============================================================
 function createScene() {
     createWaterSurface();
@@ -162,9 +162,9 @@ function createScene() {
     createHandOutline();
 }
 
-// --- 手部轮廓线（初始化，两只手） ---
+// --- Hand outline (initialization, both hands) ---
 function createHandOutline() {
-    // 光晕纹理（共用）
+    // Glow texture (shared)
     const glowCanvas = document.createElement('canvas');
     glowCanvas.width = 64; glowCanvas.height = 64;
     const gCtx = glowCanvas.getContext('2d');
@@ -177,7 +177,7 @@ function createHandOutline() {
     const glowTex = new THREE.CanvasTexture(glowCanvas);
 
     for (let h = 0; h < 2; h++) {
-        // 轮廓线
+        // Outline line
         const maxPoints = handArray.length + 1;
         const positions = new Float32Array(maxPoints * 3);
         const geometry = new THREE.BufferGeometry();
@@ -198,7 +198,7 @@ function createHandOutline() {
         scene.add(lineMesh);
         handLineMeshes[h] = lineMesh;
 
-        // 光晕
+        // Glow sprite
         const spriteMat = new THREE.SpriteMaterial({
             map: glowTex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false
         });
@@ -210,9 +210,9 @@ function createHandOutline() {
     }
 }
 
-// --- 2a. 水面 (高处半透明平面) ---
+// --- 2a. Water surface (translucent plane at height) ---
 function createWaterSurface() {
-    // 主水面
+    // Main water surface
     const geo = new THREE.PlaneGeometry(200, 200, 60, 60);
     const mat = new THREE.MeshPhongMaterial({
         color: 0x88ccdd,
@@ -226,7 +226,7 @@ function createWaterSurface() {
     surface.position.y = 25;
     scene.add(surface);
 
-    // 焦散纹理层 (用第二个平面模拟)
+    // Caustic texture layer (simulated with a second plane)
     const causticGeo = new THREE.PlaneGeometry(200, 200, 40, 40);
     const causticMat = new THREE.MeshBasicMaterial({
         color: 0x66bbdd,
@@ -238,12 +238,12 @@ function createWaterSurface() {
     caustic.rotation.x = -Math.PI / 2;
     caustic.position.y = 24.5;
     scene.add(caustic);
-    // 存起来后续做波动
+    // Store for later wave animation
     scene.userData.waterSurface = surface;
     scene.userData.caustic = caustic;
 }
 
-// --- 2b. God Rays (半写实光柱) ---
+// --- 2b. God Rays (semi-realistic light shafts) ---
 function createGodRays() {
     const rayCount = 7;
     for (let i = 0; i < rayCount; i++) {
@@ -260,7 +260,7 @@ function createGodRays() {
         });
         const ray = new THREE.Mesh(geo, mat);
 
-        // 散布在头顶上方
+        // Spread above the viewer
         const angle = (i / rayCount) * Math.PI * 2;
         const radius = 5 + Math.random() * 20;
         ray.position.set(
@@ -268,7 +268,7 @@ function createGodRays() {
             12 + Math.random() * 8,
             Math.sin(angle) * radius
         );
-        // 稍微倾斜，不完全垂直
+        // Slightly tilted, not perfectly vertical
         ray.rotation.x = (Math.random() - 0.5) * 0.3;
         ray.rotation.z = (Math.random() - 0.5) * 0.3;
 
@@ -284,16 +284,16 @@ function createGodRays() {
     }
 }
 
-// --- 2c. 鱼 (3D 几何体，noise 驱动游动) ---
+// --- 2c. Fish (3D geometry, noise-driven swimming) ---
 function createFishes() {
-    const fishCount = 6; // 不要太密，保持呼吸感
+    const fishCount = 6; // Keep sparse for breathing room
     for (let i = 0; i < fishCount; i++) {
         const group = new THREE.Group();
 
-        // 鱼身 (椭球)
+        // Fish body (ellipsoid)
         const bodyGeo = new THREE.SphereGeometry(0.5, 8, 6);
         bodyGeo.scale(1.8, 0.6, 0.8);
-        const hue = 0.05 + Math.random() * 0.1; // 橙-金色范围
+        const hue = 0.05 + Math.random() * 0.1; // Orange-gold range
         const bodyColor = new THREE.Color().setHSL(hue, 0.7, 0.55);
         const bodyMat = new THREE.MeshPhongMaterial({
             color: bodyColor,
@@ -304,12 +304,12 @@ function createFishes() {
         const body = new THREE.Mesh(bodyGeo, bodyMat);
         group.add(body);
 
-        // 鱼尾 (三角形，顶点A在身体连接处作为旋转轴心)
-        // 三角形三个顶点：A(连接点/pivot)=原点, B和C是尾巴展开的两端
+        // Fish tail (triangle, vertex A at body junction serves as rotation pivot)
+        // Three vertices: A (connection/pivot) = origin, B and C are the two tail ends
         const tailVertices = new Float32Array([
-            0, 0, 0,           // A: pivot 顶点，在身体末端
-            -0.9, 0.45, 0,     // B: 尾巴上端
-            -0.9, -0.45, 0     // C: 尾巴下端
+            0, 0, 0,           // A: pivot vertex, at body end
+            -0.9, 0.45, 0,     // B: tail upper end
+            -0.9, -0.45, 0     // C: tail lower end
         ]);
         const tailGeo = new THREE.BufferGeometry();
         tailGeo.setAttribute('position', new THREE.BufferAttribute(tailVertices, 3));
