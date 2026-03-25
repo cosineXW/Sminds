@@ -1,0 +1,1027 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>水底初醒</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { overflow: hidden; background: #000; font-family: sans-serif; color: white; }
+        #webcam { position: fixed; width: 640px; height: 480px; visibility: hidden; pointer-events: none; }
+        #ui {
+            position: fixed; top: 10px; left: 10px; z-index: 10;
+            background: rgba(0,0,0,0.4); padding: 12px 16px; border-radius: 8px;
+            font-size: 13px; line-height: 1.6; max-width: 320px;
+            backdrop-filter: blur(4px);
+        }
+        #ui h3 { font-size: 14px; margin-bottom: 4px; }
+        #ui p { opacity: 0.7; font-size: 12px; }
+        canvas { display: block; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://unpkg.com/ml5@0.12.2/dist/ml5.min.js"></script>
+    <!-- MediaPipe Hands: 支持双手检测 (ml5 handpose 只能检测单手) -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+    <div id="ui">
+        <h3 id="status">正在加载 AI 模型...</h3>
+        <p>左右转头 → 水平移动视角</p>
+        <p>伸手 → 拨动水草荷叶、改变鱼的方向</p>
+        <p id="debug"></p>
+    </div>
+    <video id="webcam" playsinline autoplay width="640" height="480"></video>
+
+<script>
+// ============================================================
+//  Perlin Noise (经典实现)
+// ============================================================
+const PerlinNoise = (() => {
+    const p = [];
+    const permutation = [151,160,137,91,90,15,131,13,201,95,96,53,194,233,7,225,140,36,103,30,69,142,8,99,37,240,21,10,23,190,6,148,247,120,234,75,0,26,197,62,94,252,219,203,117,35,11,32,57,177,33,88,237,149,56,87,174,20,125,136,171,168,68,175,74,165,71,134,139,48,27,166,77,146,158,231,83,111,229,122,60,211,133,230,220,105,92,41,55,46,245,40,244,102,143,54,65,25,63,161,1,216,80,73,209,76,132,187,208,89,18,169,200,196,135,130,116,188,159,86,164,100,109,198,173,186,3,64,52,217,226,250,124,123,5,202,38,147,118,126,255,82,85,212,207,206,59,227,47,16,58,17,182,189,28,42,223,183,170,213,119,248,152,2,44,154,163,70,221,153,101,155,167,43,172,9,129,22,39,253,19,98,108,110,79,113,224,232,178,185,112,104,218,246,97,228,251,34,242,193,238,210,144,12,191,179,162,241,81,51,145,235,249,14,239,107,49,192,214,31,181,199,106,157,184,84,204,176,115,121,50,45,127,4,150,254,138,236,205,93,222,114,67,29,24,72,243,141,128,195,78,66,215,61,156,180];
+    for (let i = 0; i < 256; i++) p[i] = p[i + 256] = permutation[i];
+    function fade(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+    function lerp(a, b, t) { return a + t * (b - a); }
+    function grad(hash, x, y, z) {
+        const h = hash & 15;
+        const u = h < 8 ? x : y;
+        const v = h < 4 ? y : h === 12 || h === 14 ? x : z;
+        return ((h & 1) === 0 ? u : -u) + ((h & 2) === 0 ? v : -v);
+    }
+    return {
+        noise(x, y, z = 0) {
+            const X = Math.floor(x) & 255, Y = Math.floor(y) & 255, Z = Math.floor(z) & 255;
+            x -= Math.floor(x); y -= Math.floor(y); z -= Math.floor(z);
+            const u = fade(x), v = fade(y), w = fade(z);
+            const A = p[X] + Y, AA = p[A] + Z, AB = p[A + 1] + Z;
+            const B = p[X + 1] + Y, BA = p[B] + Z, BB = p[B + 1] + Z;
+            return lerp(
+                lerp(lerp(grad(p[AA], x, y, z), grad(p[BA], x - 1, y, z), u),
+                     lerp(grad(p[AB], x, y - 1, z), grad(p[BB], x - 1, y - 1, z), u), v),
+                lerp(lerp(grad(p[AA + 1], x, y, z - 1), grad(p[BA + 1], x - 1, y, z - 1), u),
+                     lerp(grad(p[AB + 1], x, y - 1, z - 1), grad(p[BB + 1], x - 1, y - 1, z - 1), u), v), w);
+        }
+    };
+})();
+
+// ============================================================
+//  全局变量
+// ============================================================
+let scene, camera, cameraGroup, renderer;
+let faceMesh, video;
+let facePredictions = [];
+let isFaceReady = false, isHandReady = false;
+// MediaPipe Hands 结果：multiHandLandmarks 是数组，每只手21个归一化坐标(0~1)
+let mpHandResults = null;
+
+// 生态对象
+let fishes = [];
+let weeds = [];
+let lotusLeaves = [];
+let godRays = [];
+// 支持双手：每只手各自的世界坐标和状态
+let handWorldPositions = [new THREE.Vector3(), new THREE.Vector3()];
+let handActive = false;
+let activeHandCount = 0;
+
+// 手部轮廓绘制（参考 handArray 路径：沿手指描边再返回）
+const handArray = [
+    1, 2, 3, 4, 3, 2, 5, 6, 7, 8, 7, 6, 5,
+    9, 10, 11, 12, 11, 10, 9, 13, 14, 15, 16,
+    15, 14, 13, 17, 18, 19, 20, 19, 18, 17, 0
+];
+let handLineMeshes = [null, null]; // 两只手的轮廓线
+let handGlows = [null, null]; // 两只手的光晕
+
+const clock = new THREE.Clock();
+const statusEl = document.getElementById('status');
+const debugEl = document.getElementById('debug');
+
+// ============================================================
+//  启动
+// ============================================================
+window.onload = async () => {
+    initThreeJS();
+    createScene();
+    await initWebcam();
+    initMl5();
+    animate();
+};
+
+// ============================================================
+//  1. Three.js 初始化 — 仰卧水底视角
+// ============================================================
+function initThreeJS() {
+    scene = new THREE.Scene();
+    // 深蓝水底背景
+    scene.background = new THREE.Color(0x051525);
+    scene.fog = new THREE.FogExp2(0x051525, 0.018);
+
+    // 相机组：模拟躺平后头部左右转动
+    cameraGroup = new THREE.Group();
+    scene.add(cameraGroup);
+
+    camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.1, 200);
+    // 仰卧：相机朝正上方 (+Y)
+    camera.rotation.order = 'YXZ';
+    camera.rotation.x = Math.PI / 2;
+    camera.position.set(0, 0, 0);
+    cameraGroup.add(camera);
+    cameraGroup.position.set(0, 0, 0);
+
+    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    // 环境光 + 从上方打下来的方向光
+    const ambientLight = new THREE.AmbientLight(0x1a3a5a, 0.6);
+    scene.add(ambientLight);
+
+    const dirLight = new THREE.DirectionalLight(0xaaddff, 0.8);
+    dirLight.position.set(0, 50, 0);
+    scene.add(dirLight);
+
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+}
+
+// ============================================================
+//  2. 搭建水底场景
+// ============================================================
+function createScene() {
+    createWaterSurface();
+    createGodRays();
+    createFishes();
+    createLotusLeaves();
+    createWeeds();
+    createBubbles();
+    createHandOutline();
+}
+
+// --- 手部轮廓线（初始化，两只手） ---
+function createHandOutline() {
+    // 光晕纹理（共用）
+    const glowCanvas = document.createElement('canvas');
+    glowCanvas.width = 64; glowCanvas.height = 64;
+    const gCtx = glowCanvas.getContext('2d');
+    const gradient = gCtx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    gradient.addColorStop(0, 'rgba(120, 200, 255, 0.4)');
+    gradient.addColorStop(0.5, 'rgba(80, 160, 220, 0.15)');
+    gradient.addColorStop(1, 'rgba(40, 100, 180, 0)');
+    gCtx.fillStyle = gradient;
+    gCtx.fillRect(0, 0, 64, 64);
+    const glowTex = new THREE.CanvasTexture(glowCanvas);
+
+    for (let h = 0; h < 2; h++) {
+        // 轮廓线
+        const maxPoints = handArray.length + 1;
+        const positions = new Float32Array(maxPoints * 3);
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setDrawRange(0, 0);
+
+        const material = new THREE.LineBasicMaterial({
+            color: 0x88ddff,
+            transparent: true,
+            opacity: 0.6,
+            linewidth: 1,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false
+        });
+
+        const lineMesh = new THREE.Line(geometry, material);
+        lineMesh.visible = false;
+        scene.add(lineMesh);
+        handLineMeshes[h] = lineMesh;
+
+        // 光晕
+        const spriteMat = new THREE.SpriteMaterial({
+            map: glowTex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false
+        });
+        const glow = new THREE.Sprite(spriteMat);
+        glow.scale.set(4, 4, 1);
+        glow.visible = false;
+        scene.add(glow);
+        handGlows[h] = glow;
+    }
+}
+
+// --- 2a. 水面 (高处半透明平面) ---
+function createWaterSurface() {
+    // 主水面
+    const geo = new THREE.PlaneGeometry(200, 200, 60, 60);
+    const mat = new THREE.MeshPhongMaterial({
+        color: 0x88ccdd,
+        transparent: true,
+        opacity: 0.15,
+        side: THREE.DoubleSide,
+        shininess: 100
+    });
+    const surface = new THREE.Mesh(geo, mat);
+    surface.rotation.x = -Math.PI / 2;
+    surface.position.y = 25;
+    scene.add(surface);
+
+    // 焦散纹理层 (用第二个平面模拟)
+    const causticGeo = new THREE.PlaneGeometry(200, 200, 40, 40);
+    const causticMat = new THREE.MeshBasicMaterial({
+        color: 0x66bbdd,
+        transparent: true,
+        opacity: 0.08,
+        side: THREE.DoubleSide
+    });
+    const caustic = new THREE.Mesh(causticGeo, causticMat);
+    caustic.rotation.x = -Math.PI / 2;
+    caustic.position.y = 24.5;
+    scene.add(caustic);
+    // 存起来后续做波动
+    scene.userData.waterSurface = surface;
+    scene.userData.caustic = caustic;
+}
+
+// --- 2b. God Rays (半写实光柱) ---
+function createGodRays() {
+    const rayCount = 7;
+    for (let i = 0; i < rayCount; i++) {
+        const width = 2 + Math.random() * 4;
+        const height = 30 + Math.random() * 15;
+        const geo = new THREE.PlaneGeometry(width, height);
+        const mat = new THREE.MeshBasicMaterial({
+            color: 0xddeeff,
+            transparent: true,
+            opacity: 0.04 + Math.random() * 0.06,
+            side: THREE.DoubleSide,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending
+        });
+        const ray = new THREE.Mesh(geo, mat);
+
+        // 散布在头顶上方
+        const angle = (i / rayCount) * Math.PI * 2;
+        const radius = 5 + Math.random() * 20;
+        ray.position.set(
+            Math.cos(angle) * radius,
+            12 + Math.random() * 8,
+            Math.sin(angle) * radius
+        );
+        // 稍微倾斜，不完全垂直
+        ray.rotation.x = (Math.random() - 0.5) * 0.3;
+        ray.rotation.z = (Math.random() - 0.5) * 0.3;
+
+        scene.add(ray);
+        godRays.push({
+            mesh: ray,
+            baseOpacity: mat.opacity,
+            phase: Math.random() * Math.PI * 2,
+            speed: 0.3 + Math.random() * 0.5,
+            baseX: ray.position.x,
+            baseZ: ray.position.z
+        });
+    }
+}
+
+// --- 2c. 鱼 (3D 几何体，noise 驱动游动) ---
+function createFishes() {
+    const fishCount = 6; // 不要太密，保持呼吸感
+    for (let i = 0; i < fishCount; i++) {
+        const group = new THREE.Group();
+
+        // 鱼身 (椭球)
+        const bodyGeo = new THREE.SphereGeometry(0.5, 8, 6);
+        bodyGeo.scale(1.8, 0.6, 0.8);
+        const hue = 0.05 + Math.random() * 0.1; // 橙-金色范围
+        const bodyColor = new THREE.Color().setHSL(hue, 0.7, 0.55);
+        const bodyMat = new THREE.MeshPhongMaterial({
+            color: bodyColor,
+            transparent: true,
+            opacity: 0.85,
+            shininess: 40
+        });
+        const body = new THREE.Mesh(bodyGeo, bodyMat);
+        group.add(body);
+
+        // 鱼尾 (三角形，顶点A在身体连接处作为旋转轴心)
+        // 三角形三个顶点：A(连接点/pivot)=原点, B和C是尾巴展开的两端
+        const tailVertices = new Float32Array([
+            0, 0, 0,           // A: pivot 顶点，在身体末端
+            -0.9, 0.45, 0,     // B: 尾巴上端
+            -0.9, -0.45, 0     // C: 尾巴下端
+        ]);
+        const tailGeo = new THREE.BufferGeometry();
+        tailGeo.setAttribute('position', new THREE.BufferAttribute(tailVertices, 3));
+        tailGeo.setIndex([0, 1, 2]);
+        tailGeo.computeVertexNormals();
+        const tailMat = new THREE.MeshPhongMaterial({
+            color: bodyColor.clone().multiplyScalar(0.8),
+            transparent: true,
+            opacity: 0.8,
+            side: THREE.DoubleSide
+        });
+        const tail = new THREE.Mesh(tailGeo, tailMat);
+        // pivot就是顶点A=原点，放在鱼身末端
+        tail.position.x = -0.85;
+        group.add(tail);
+
+        // 鱼鳍
+        const finGeo = new THREE.PlaneGeometry(0.5, 0.3);
+        const finMat = new THREE.MeshPhongMaterial({
+            color: bodyColor.clone().multiplyScalar(0.9),
+            transparent: true,
+            opacity: 0.6,
+            side: THREE.DoubleSide
+        });
+        const fin = new THREE.Mesh(finGeo, finMat);
+        fin.position.set(0, 0.35, 0);
+        fin.rotation.x = 0.3;
+        group.add(fin);
+
+        // 随机初始位置（留足间距）
+        const angle = (i / fishCount) * Math.PI * 2 + (Math.random() - 0.5) * 0.5;
+        const dist = 8 + Math.random() * 15;
+        group.position.set(
+            Math.cos(angle) * dist,
+            6 + Math.random() * 12,
+            Math.sin(angle) * dist
+        );
+
+        const scale = 0.6 + Math.random() * 0.5;
+        group.scale.setScalar(scale);
+        scene.add(group);
+
+        fishes.push({
+            group: group,
+            tail: tail,
+            // noise 参数：每条鱼有独特的 offset
+            noiseOffsetX: Math.random() * 100,
+            noiseOffsetZ: Math.random() * 100,
+            noiseOffsetY: Math.random() * 100,
+            speed: 0.15 + Math.random() * 0.2,
+            baseY: group.position.y,
+            // 手部交互
+            pushVelocity: new THREE.Vector3(0, 0, 0),
+            pushDecay: 0.96
+        });
+    }
+}
+
+// --- 2d. 荷叶（均匀铺满整个视野，大小不一，近处可交互） ---
+function createLotusLeaves() {
+    // 用网格+随机偏移确保均匀铺满，不聚堆
+    // 在 XZ 平面上划格子，每格放一片荷叶
+    const gridSize = 8;   // 8x8 格子
+    const cellSize = 8;   // 每格 8 个世界单位
+    const totalLeaves = [];
+
+    for (let gx = 0; gx < gridSize; gx++) {
+        for (let gz = 0; gz < gridSize; gz++) {
+            // 跳过一些格子，不要太满（约60%填充率）
+            if (Math.random() > 0.6) continue;
+
+            // 格子中心 + 随机偏移
+            const cx = (gx - gridSize / 2 + 0.5) * cellSize + (Math.random() - 0.5) * cellSize * 0.7;
+            const cz = (gz - gridSize / 2 + 0.5) * cellSize + (Math.random() - 0.5) * cellSize * 0.7;
+            const distFromCenter = Math.sqrt(cx * cx + cz * cz);
+
+            // 根据离中心距离决定大小和是否可交互
+            // 近处（dist < 12）：大荷叶，可交互
+            // 中间（12~25）：中等
+            // 远处（>25）：小荷叶，装饰
+            let radius, opacity, interactive;
+            if (distFromCenter < 12) {
+                radius = 3.0 + Math.random() * 3.5;  // 3~6.5
+                opacity = 0.7 + Math.random() * 0.1;
+                interactive = true;
+            } else if (distFromCenter < 25) {
+                radius = 1.5 + Math.random() * 2.0;  // 1.5~3.5
+                opacity = 0.4 + Math.random() * 0.15;
+                interactive = false;
+            } else {
+                radius = 0.6 + Math.random() * 1.2;  // 0.6~1.8
+                opacity = 0.2 + Math.random() * 0.1;
+                interactive = false;
+            }
+
+            // Y 高度：近处低一些（靠近你），远处高一些（靠近水面）
+            const yPos = mapRange(clamp(distFromCenter, 0, 40), 0, 40, 18, 24.5);
+
+            // 荷叶形状（圆盘+V形缺口）
+            const shape = new THREE.Shape();
+            const segments = 32;
+            const gapStart = Math.random() * Math.PI * 2;
+            const gapSize = 0.3;
+            for (let s = 0; s <= segments; s++) {
+                const theta = (s / segments) * Math.PI * 2;
+                let r = radius;
+                let diff = theta - gapStart;
+                if (diff < 0) diff += Math.PI * 2;
+                if (diff > Math.PI) diff = Math.PI * 2 - diff;
+                if (diff < gapSize) r *= 0.3;
+                const x = Math.cos(theta) * r;
+                const y = Math.sin(theta) * r;
+                if (s === 0) shape.moveTo(x, y);
+                else shape.lineTo(x, y);
+            }
+
+            const geo = new THREE.ShapeGeometry(shape);
+            const mat = new THREE.MeshPhongMaterial({
+                color: new THREE.Color().setHSL(0.33 + Math.random() * 0.08, 0.45 + Math.random() * 0.15, 0.18 + Math.random() * 0.15),
+                transparent: true,
+                opacity: opacity,
+                side: THREE.DoubleSide
+            });
+            const leaf = new THREE.Mesh(geo, mat);
+            leaf.rotation.x = -Math.PI / 2;
+            // 每片荷叶随机旋转一个角度，更自然
+            leaf.rotation.z = Math.random() * Math.PI * 2;
+            leaf.position.set(cx, yPos + Math.random() * 0.5, cz);
+
+            // 叶脉：从中心向外均匀发散360°
+            const veinsGroup = new THREE.Group();
+            const veinCount = interactive ? 14 : 6;
+            for (let v = 0; v < veinCount; v++) {
+                const veinAngle = (v / veinCount) * Math.PI * 2;
+                // 终点在叶缘
+                const endX = Math.cos(veinAngle) * radius * 0.88;
+                const endZ = Math.sin(veinAngle) * radius * 0.88;
+                // 中间点微弯
+                const midR = radius * 0.45;
+                const midX = Math.cos(veinAngle + (Math.random() - 0.5) * 0.15) * midR;
+                const midZ = Math.sin(veinAngle + (Math.random() - 0.5) * 0.15) * midR;
+
+                const veinPoints = [
+                    new THREE.Vector3(0, 0.02, 0),   // 中心
+                    new THREE.Vector3(midX, 0.02, midZ),
+                    new THREE.Vector3(endX, 0.02, endZ)
+                ];
+                const veinCurve = new THREE.CatmullRomCurve3(veinPoints);
+                const curvePoints = veinCurve.getPoints(8);
+                const veinGeo = new THREE.BufferGeometry().setFromPoints(curvePoints);
+                const veinMat = new THREE.LineBasicMaterial({
+                    color: 0x2a6a35, transparent: true,
+                    opacity: interactive ? 0.4 : 0.2
+                });
+                veinsGroup.add(new THREE.Line(veinGeo, veinMat));
+            }
+            veinsGroup.rotation.x = -Math.PI / 2;
+            veinsGroup.rotation.z = leaf.rotation.z; // 跟随荷叶旋转
+            veinsGroup.position.copy(leaf.position);
+            scene.add(veinsGroup);
+            scene.add(leaf);
+
+            lotusLeaves.push({
+                mesh: leaf,
+                veins: veinsGroup,
+                noiseOffset: Math.random() * 100,
+                baseX: leaf.position.x,
+                baseZ: leaf.position.z,
+                baseY: leaf.position.y,
+                pushVelocity: new THREE.Vector3(0, 0, 0),
+                pushDecay: 0.94,
+                interactive: interactive
+            });
+        }
+    }
+}
+
+// --- 2e. 水草 (多层：近处大丛可交互，远处小丛做背景) ---
+function createWeeds() {
+    // 近景大水草（可交互）：高且粗，靠近
+    // 中景水草：中等
+    // 远景小水草（纯装饰）：矮小、半透明
+    const layers = [
+        { count: 5, heightMin: 6, heightMax: 12, stalkMin: 3, stalkMax: 5, thickness: 0.08, distMin: 3,  distMax: 12, opac: 0.8, interactive: true },
+        { count: 5, heightMin: 3, heightMax: 7,  stalkMin: 2, stalkMax: 4, thickness: 0.05, distMin: 10, distMax: 22, opac: 0.55, interactive: false },
+        { count: 6, heightMin: 1.5, heightMax: 4, stalkMin: 1, stalkMax: 3, thickness: 0.03, distMin: 20, distMax: 40, opac: 0.3, interactive: false },
+    ];
+
+    layers.forEach(layer => {
+        for (let i = 0; i < layer.count; i++) {
+            const group = new THREE.Group();
+            const stalkCount = layer.stalkMin + Math.floor(Math.random() * (layer.stalkMax - layer.stalkMin + 1));
+            const stalks = [];
+
+            for (let s = 0; s < stalkCount; s++) {
+                const height = layer.heightMin + Math.random() * (layer.heightMax - layer.heightMin);
+                const segments = 8;
+                const points = [];
+                for (let p = 0; p <= segments; p++) {
+                    points.push(new THREE.Vector3(
+                        (Math.random() - 0.5) * 0.3,
+                        (p / segments) * height,
+                        (Math.random() - 0.5) * 0.3
+                    ));
+                }
+                const curve = new THREE.CatmullRomCurve3(points);
+                const tubeGeo = new THREE.TubeGeometry(curve, 12, layer.thickness + Math.random() * 0.03, 5, false);
+                const tubeMat = new THREE.MeshPhongMaterial({
+                    color: new THREE.Color().setHSL(0.28 + Math.random() * 0.12, 0.45 + Math.random() * 0.15, 0.18 + Math.random() * 0.15),
+                    transparent: true,
+                    opacity: layer.opac,
+                    side: THREE.DoubleSide
+                });
+                const stalk = new THREE.Mesh(tubeGeo, tubeMat);
+                stalk.position.x = (Math.random() - 0.5) * 0.5;
+                stalk.position.z = (Math.random() - 0.5) * 0.5;
+                group.add(stalk);
+                stalks.push({ mesh: stalk, points: points, curve: curve, height: height });
+
+                // 叶片（近处更多叶片）
+                const leafChance = layer.interactive ? 0.6 : 0.3;
+                if (Math.random() < leafChance) {
+                    const leafW = (layer.interactive ? 0.6 : 0.3) + Math.random() * 0.4;
+                    const leafH = (layer.interactive ? 1.5 : 0.8) + Math.random() * 0.8;
+                    const leafGeo = new THREE.PlaneGeometry(leafW, leafH);
+                    const leafMat = new THREE.MeshPhongMaterial({
+                        color: new THREE.Color().setHSL(0.28 + Math.random() * 0.1, 0.6, 0.22),
+                        transparent: true,
+                        opacity: layer.opac * 0.85,
+                        side: THREE.DoubleSide
+                    });
+                    const leafMesh = new THREE.Mesh(leafGeo, leafMat);
+                    leafMesh.position.set(
+                        (Math.random() - 0.5) * 0.3,
+                        height * (0.4 + Math.random() * 0.4),
+                        (Math.random() - 0.5) * 0.3
+                    );
+                    leafMesh.rotation.set(Math.random() * 0.5, Math.random() * Math.PI, Math.random() * 0.3);
+                    group.add(leafMesh);
+                }
+            }
+
+            const angle = (i / layer.count) * Math.PI * 2 + (Math.random() - 0.5) * 1.0;
+            const dist = layer.distMin + Math.random() * (layer.distMax - layer.distMin);
+            group.position.set(
+                Math.cos(angle) * dist,
+                -2,
+                Math.sin(angle) * dist
+            );
+
+            scene.add(group);
+            weeds.push({
+                group: group,
+                stalks: stalks,
+                noiseOffset: Math.random() * 100,
+                pushAngle: 0,
+                pushStrength: 0,
+                pushDecay: 0.95,
+                interactive: layer.interactive
+            });
+        }
+    });
+}
+
+// --- 2f. 气泡 (微小漂浮粒子) ---
+function createBubbles() {
+    const bubbleCount = 40;
+    const positions = new Float32Array(bubbleCount * 3);
+    for (let i = 0; i < bubbleCount; i++) {
+        positions[i * 3] = (Math.random() - 0.5) * 60;
+        positions[i * 3 + 1] = Math.random() * 25;
+        positions[i * 3 + 2] = (Math.random() - 0.5) * 60;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const mat = new THREE.PointsMaterial({
+        color: 0xaaddff,
+        size: 0.15,
+        transparent: true,
+        opacity: 0.4,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+    });
+    const bubbles = new THREE.Points(geo, mat);
+    scene.add(bubbles);
+    scene.userData.bubbles = bubbles;
+}
+
+// ============================================================
+//  3. 摄像头 + ml5 初始化
+// ============================================================
+async function initWebcam() {
+    video = document.getElementById('webcam');
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+        video.srcObject = stream;
+        await new Promise(r => { video.onloadedmetadata = r; });
+    } catch (e) {
+        statusEl.innerText = '无法访问摄像头，请检查权限。';
+        console.error(e);
+    }
+}
+
+function initMl5() {
+    // ml5 只负责 facemesh
+    faceMesh = ml5.facemesh(video, () => {
+        isFaceReady = true;
+        checkReady();
+    });
+    faceMesh.on('predict', r => { facePredictions = r; });
+
+    // MediaPipe Hands 负责双手检测
+    const mpHands = new Hands({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+    mpHands.setOptions({
+        maxNumHands: 2,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.6,
+        minTrackingConfidence: 0.5
+    });
+    mpHands.onResults((results) => {
+        mpHandResults = results;
+        if (!isHandReady) {
+            isHandReady = true;
+            checkReady();
+        }
+    });
+
+    // 持续送帧给 MediaPipe
+    async function feedHands() {
+        if (video.readyState >= 2) {
+            try { await mpHands.send({ image: video }); } catch(e) {}
+        }
+        requestAnimationFrame(feedHands);
+    }
+    feedHands();
+}
+
+function checkReady() {
+    if (isFaceReady && isHandReady) {
+        statusEl.innerText = '水底世界已激活！';
+    } else if (isFaceReady) {
+        statusEl.innerText = '面部已就绪，等待手部模型...';
+    } else if (isHandReady) {
+        statusEl.innerText = '手部已就绪，等待面部模型...';
+    }
+}
+
+// ============================================================
+//  4. 主动画循环
+// ============================================================
+function animate() {
+    requestAnimationFrame(animate);
+    const t = clock.getElapsedTime();
+
+    debugEl.innerHTML = '';
+    updateHeadTracking(t);
+    updateHandTracking(t);
+    updateFishes(t);
+    updateLotusLeaves(t);
+    updateWeeds(t);
+    updateGodRays(t);
+    updateWaterSurface(t);
+    updateBubbles(t);
+
+    renderer.render(scene, camera);
+}
+
+// --- 4a. 头部追踪 → 水平平移相机（不旋转） ---
+// 防抖策略：EMA平滑ratio → 死区过滤微小变化 → 缓慢lerp输出
+const MAX_PAN_DISTANCE = 12;
+let currentPanX = 0;
+let smoothedRatio = 0;       // EMA 平滑后的原始ratio
+let lockedPanX = 0;          // 当前锁定的目标位置
+const DEAD_ZONE = 0.015;     // ratio变化小于此值时不更新目标
+const EMA_ALPHA = 0.12;      // ratio的指数移动平均系数（越小越平滑）
+const PAN_LERP = 0.01;       // 最终位置插值速度（很慢，稳定）
+
+function updateHeadTracking(t) {
+    if (!isFaceReady || facePredictions.length === 0) return;
+
+    const kp = facePredictions[0].scaledMesh;
+    const nose = kp[1], leftEye = kp[33], rightEye = kp[263];
+
+    const distL = dist2D(nose[0], nose[1], leftEye[0], leftEye[1]);
+    const distR = dist2D(nose[0], nose[1], rightEye[0], rightEye[1]);
+    const rawRatio = (distL - distR) / (distL + distR);
+
+    // 1. EMA 平滑原始信号（消除帧间噪声）
+    smoothedRatio += (rawRatio - smoothedRatio) * EMA_ALPHA;
+
+    // 2. 映射到目标平移量
+    const mappedTarget = clamp(
+        mapRange(smoothedRatio, -0.2, 0.2, -MAX_PAN_DISTANCE, MAX_PAN_DISTANCE),
+        -MAX_PAN_DISTANCE, MAX_PAN_DISTANCE
+    );
+
+    // 3. 死区：只有当目标变化超过阈值时才更新锁定位置
+    const panDelta = Math.abs(mappedTarget - lockedPanX);
+    if (panDelta > DEAD_ZONE * MAX_PAN_DISTANCE * 2) {
+        // 变化足够大，更新目标（但也用 lerp 而不是直接跳）
+        lockedPanX += (mappedTarget - lockedPanX) * 0.15;
+    }
+
+    // 4. 最终输出：非常缓慢地趋近锁定位置
+    currentPanX += (lockedPanX - currentPanX) * PAN_LERP;
+    cameraGroup.position.x = currentPanX;
+
+    debugEl.innerHTML += `平移: ${currentPanX.toFixed(1)} / ±${MAX_PAN_DISTANCE}`;
+}
+
+// --- 4b. 手部追踪 + 双手轮廓绘制 (MediaPipe Hands) ---
+// MediaPipe 坐标是归一化的 (0~1)，x右y下z深(离摄像头近=负)
+// 仰卧视角映射：
+//   MP x (0→1) → 3D X: 不翻转（摄像头本身是镜像的，正好抵消）
+//   MP y (0→1) → 3D Z: 翻转（摄像头上方=世界远处）
+//   MP z → 3D Y高度偏移：离摄像头越近(z越负)→手越伸长→在水底世界离你越远→画得越小
+function mpToWorld(lm) {
+    // 镜像X：摄像头画面左右是反的，所以 x: 1→-15, 0→15
+    const x = mapRange(lm.x, 0, 1, 15, -15);
+    const z = mapRange(lm.y, 0, 1, 12, -12);
+    const y = 10 + (lm.z || 0) * -8;
+    return { x, y, z };
+}
+
+// 手的缩放：用整只手最左和最右关键点的水平距离 a
+// a 越大（手在画面中展得越开）→ 实际画出来越小
+function getHandScale(landmarks, handIndex) {
+    // 用手腕(0)到中指根(9)的距离——手掌骨骼长度，不随手指张合变化
+    const wrist = landmarks[0], midBase = landmarks[9];
+    const a = Math.sqrt((wrist.x - midBase.x) ** 2 + (wrist.y - midBase.y) ** 2);
+    const scale = Math.max(mapRange(a, 0.05, 0.15, 1.2, 0.3), 0.1);
+    debugEl.innerHTML += `<br>手${handIndex}: a=${a.toFixed(3)} scale=${scale.toFixed(2)}`;
+    return scale;
+}
+
+function updateHandTracking(t) {
+    activeHandCount = 0;
+
+    const hands = mpHandResults && mpHandResults.multiHandLandmarks;
+    if (!isHandReady || !hands || hands.length === 0) {
+        handActive = false;
+        for (let h = 0; h < 2; h++) {
+            if (handLineMeshes[h]) handLineMeshes[h].visible = false;
+            if (handGlows[h]) handGlows[h].visible = false;
+        }
+        return;
+    }
+
+    handActive = true;
+    activeHandCount = Math.min(hands.length, 2);
+
+    for (let h = 0; h < 2; h++) {
+        if (h >= hands.length) {
+            if (handLineMeshes[h]) handLineMeshes[h].visible = false;
+            if (handGlows[h]) handGlows[h].visible = false;
+            continue;
+        }
+
+        const landmarks = hands[h]; // 21个点，每个 {x, y, z}
+        const palm = landmarks[9];
+        const palmWorld = mpToWorld(palm);
+
+        handWorldPositions[h].lerp(
+            new THREE.Vector3(palmWorld.x, palmWorld.y, palmWorld.z), 0.15
+        );
+
+        // 手的缩放比例
+        const handScale = getHandScale(landmarks, h);
+
+        // --- 绘制手的轮廓线 ---
+        const lineMesh = handLineMeshes[h];
+        if (lineMesh && landmarks.length >= 21) {
+            lineMesh.visible = true;
+            const positions = lineMesh.geometry.attributes.position;
+
+            // 用已平滑的掌心世界坐标作为锚点（不受缩放影响）
+            const cw = handWorldPositions[h];
+            // 归一化用的手宽度
+            let _minX = Infinity, _maxX = -Infinity;
+            for (let k = 0; k < landmarks.length; k++) {
+                if (landmarks[k].x < _minX) _minX = landmarks[k].x;
+                if (landmarks[k].x > _maxX) _maxX = landmarks[k].x;
+            }
+            const a = Math.max(_maxX - _minX, 0.01);
+            const worldSize = 8;
+
+            for (let i = 0; i < handArray.length; i++) {
+                const lm = landmarks[handArray[i]];
+                // 归一化偏移（除以a消除距离差异）
+                const ndx = (lm.x - palm.x) / a;
+                const ndy = (lm.y - palm.y) / a;
+                const ndz = ((lm.z || 0) - (palm.z || 0)) / a;
+                // 以平滑掌心为中心，只缩放手的形状，不影响两手间距离
+                const sx = cw.x + ndx * handScale * worldSize * -1;
+                const sy = cw.y + ndz * handScale * worldSize * -0.5;
+                const sz = cw.z + ndy * handScale * worldSize * -1;
+                positions.setXYZ(i, sx, sy, sz);
+            }
+
+            lineMesh.geometry.setDrawRange(0, handArray.length);
+            positions.needsUpdate = true;
+            lineMesh.material.opacity = 0.4 + Math.sin(t * 2 + h) * 0.15;
+        }
+
+        // 手掌光晕（大小也跟着缩放）
+        const glow = handGlows[h];
+        if (glow) {
+            glow.visible = true;
+            glow.position.copy(handWorldPositions[h]);
+            glow.scale.setScalar(3 * handScale);
+            glow.material.opacity = 0.3 + Math.sin(t * 1.5 + h * 0.5) * 0.1;
+        }
+    }
+}
+
+// --- 4c. 鱼群 Noise 游动 + 手部交互 ---
+function updateFishes(t) {
+    fishes.forEach(fish => {
+        const g = fish.group;
+
+        // Noise 驱动的自然游动
+        const nx = PerlinNoise.noise(fish.noiseOffsetX + t * fish.speed, 0, 0);
+        const nz = PerlinNoise.noise(0, fish.noiseOffsetZ + t * fish.speed, 0);
+        const ny = PerlinNoise.noise(0, 0, fish.noiseOffsetY + t * fish.speed * 0.5);
+
+        // 基础移动
+        const moveX = nx * 0.12;
+        const moveZ = nz * 0.12;
+        const moveY = ny * 0.03;
+
+        // 推力衰减
+        fish.pushVelocity.multiplyScalar(fish.pushDecay);
+        g.position.x += moveX + fish.pushVelocity.x;
+        g.position.z += moveZ + fish.pushVelocity.z;
+        g.position.y = fish.baseY + ny * 2 + fish.pushVelocity.y;
+
+        // 边界限制
+        const maxDist = 35;
+        if (g.position.x > maxDist) g.position.x = maxDist;
+        if (g.position.x < -maxDist) g.position.x = -maxDist;
+        if (g.position.z > maxDist) g.position.z = maxDist;
+        if (g.position.z < -maxDist) g.position.z = -maxDist;
+
+        // 朝向游动方向
+        const facing = Math.atan2(moveZ + fish.pushVelocity.z, moveX + fish.pushVelocity.x);
+        g.rotation.y += (facing - g.rotation.y) * 0.05;
+
+        // 尾巴摆动
+        if (fish.tail) {
+            fish.tail.rotation.y = Math.sin(t * 4 + fish.noiseOffsetX) * 0.4;
+        }
+
+        // 手部交互：靠近时被推开（检查每只手）
+        if (handActive) {
+            for (let h = 0; h < activeHandCount; h++) {
+                const hp = handWorldPositions[h];
+                const dx = g.position.x - hp.x;
+                const dz = g.position.z - hp.z;
+                const dy = g.position.y - hp.y;
+                const dist = Math.sqrt(dx * dx + dz * dz + dy * dy);
+                if (dist < 5) {
+                    const force = (5 - dist) / 5 * 0.3;
+                    fish.pushVelocity.set(
+                        dx / dist * force,
+                        dy / dist * force * 0.3,
+                        dz / dist * force
+                    );
+                }
+            }
+        }
+    });
+}
+
+// --- 4d. 荷叶漂浮 + 手部交互 ---
+function updateLotusLeaves(t) {
+    lotusLeaves.forEach(leaf => {
+        const m = leaf.mesh;
+
+        // Noise 驱动微漂
+        const driftX = PerlinNoise.noise(leaf.noiseOffset + t * 0.1, 0) * 0.02;
+        const driftZ = PerlinNoise.noise(0, leaf.noiseOffset + t * 0.1) * 0.02;
+        const bob = PerlinNoise.noise(leaf.noiseOffset, t * 0.3) * 0.3;
+
+        // 推力衰减
+        leaf.pushVelocity.multiplyScalar(leaf.pushDecay);
+        m.position.x = leaf.baseX + driftX + leaf.pushVelocity.x;
+        m.position.z = leaf.baseZ + driftZ + leaf.pushVelocity.z;
+        m.position.y = leaf.baseY + bob;
+
+        // 轻微旋转
+        m.rotation.z = PerlinNoise.noise(leaf.noiseOffset + 50, t * 0.2) * 0.1;
+
+        // 叶脉跟随
+        leaf.veins.position.copy(m.position);
+        leaf.veins.rotation.z = m.rotation.z;
+
+        // 手部交互：只有近景大荷叶可交互
+        if (handActive && leaf.interactive) {
+            for (let h = 0; h < activeHandCount; h++) {
+                const hp = handWorldPositions[h];
+                const dx = m.position.x - hp.x;
+                const dz = m.position.z - hp.z;
+                const dist = Math.sqrt(dx * dx + dz * dz);
+                if (dist < 5) {
+                    const force = (5 - dist) / 5 * 0.15;
+                    leaf.pushVelocity.x += dx / dist * force;
+                    leaf.pushVelocity.z += dz / dist * force;
+                    m.rotation.z += Math.sin(t * 8) * 0.05;
+                }
+            }
+        }
+
+        // 漂移积累回到基础位置
+        leaf.baseX += (leaf.mesh.position.x - leaf.baseX) * 0.001;
+        leaf.baseZ += (leaf.mesh.position.z - leaf.baseZ) * 0.001;
+    });
+}
+
+// --- 4e. 水草摇曳 + 手部交互 ---
+function updateWeeds(t) {
+    weeds.forEach(weed => {
+        const g = weed.group;
+
+        // Noise 驱动自然摇摆
+        const sway = PerlinNoise.noise(weed.noiseOffset + t * 0.3, 0) * 0.15;
+
+        // 手推力衰减
+        weed.pushStrength *= weed.pushDecay;
+
+        // 综合弯曲
+        const totalBend = sway + weed.pushStrength * Math.sin(weed.pushAngle);
+        const totalBendZ = PerlinNoise.noise(0, weed.noiseOffset + t * 0.25) * 0.08
+                          + weed.pushStrength * Math.cos(weed.pushAngle);
+
+        g.rotation.x = totalBendZ;
+        g.rotation.z = totalBend;
+
+        // 手部交互：只有近景大水草可交互
+        if (handActive && weed.interactive) {
+            for (let h = 0; h < activeHandCount; h++) {
+                const hp = handWorldPositions[h];
+                const dx = g.position.x - hp.x;
+                const dz = g.position.z - hp.z;
+                const dist = Math.sqrt(dx * dx + dz * dz);
+                if (dist < 5) {
+                    weed.pushStrength = Math.min(weed.pushStrength + 0.02, 0.5);
+                    weed.pushAngle = Math.atan2(dz, dx);
+                }
+            }
+        }
+    });
+}
+
+// --- 4f. God Rays 动画 ---
+function updateGodRays(t) {
+    godRays.forEach(ray => {
+        // 呼吸般的明暗变化
+        const flicker = PerlinNoise.noise(ray.phase + t * ray.speed, 0);
+        ray.mesh.material.opacity = ray.baseOpacity * (0.5 + flicker * 0.7);
+
+        // 轻微横移
+        ray.mesh.position.x = ray.baseX + Math.sin(t * 0.2 + ray.phase) * 0.5;
+        ray.mesh.position.z = ray.baseZ + Math.cos(t * 0.15 + ray.phase) * 0.5;
+    });
+}
+
+// --- 4g. 水面波动 ---
+function updateWaterSurface(t) {
+    const surface = scene.userData.waterSurface;
+    if (!surface) return;
+
+    const positions = surface.geometry.attributes.position;
+    for (let i = 0; i < positions.count; i++) {
+        const x = positions.getX(i);
+        const z = positions.getZ(i);
+        const wave = PerlinNoise.noise(x * 0.05 + t * 0.3, z * 0.05 + t * 0.2) * 0.8;
+        positions.setY(i, wave);
+    }
+    positions.needsUpdate = true;
+}
+
+// --- 4h. 气泡上浮 ---
+function updateBubbles(t) {
+    const bubbles = scene.userData.bubbles;
+    if (!bubbles) return;
+
+    const positions = bubbles.geometry.attributes.position;
+    for (let i = 0; i < positions.count; i++) {
+        let y = positions.getY(i);
+        y += 0.01 + Math.random() * 0.01;
+        if (y > 26) y = -2;
+        positions.setY(i, y);
+        // 轻微水平晃动
+        positions.setX(i, positions.getX(i) + (Math.random() - 0.5) * 0.02);
+    }
+    positions.needsUpdate = true;
+}
+
+// ============================================================
+//  工具函数
+// ============================================================
+function dist2D(x1, y1, x2, y2) {
+    return Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+}
+function mapRange(val, a1, a2, b1, b2) {
+    return b1 + (val - a1) * (b2 - b1) / (a2 - a1);
+}
+function clamp(val, min, max) {
+    return Math.min(Math.max(val, min), max);
+}
+</script>
+</body>
+</html>

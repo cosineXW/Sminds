@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>cyber wandering</title>
+  
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.js"></script>
+  
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+
+  <style>
+    /* 极简的黑暗风格 UI */
+    body { margin: 0; padding: 0; overflow: hidden; background-color: #0a0a0a; color: #fff; font-family: 'Courier New', Courier, monospace; }
+    #ui-container { position: absolute; top: 20px; left: 20px; z-index: 10; pointer-events: none; }
+    #status { margin-bottom: 10px; font-size: 14px; opacity: 0.8; }
+    button { pointer-events: auto; padding: 10px 20px; cursor: pointer; background: #fff; color: #000; border: none; font-weight: bold; font-family: inherit; transition: all 0.2s; }
+    button:hover { background: #ff4757; color: white; }
+  </style>
+</head>
+<body>
+
+  <div id="ui-container">
+    <div id="status">Status: Ghost Mode</div>
+    <button id="loginBtn" onclick="login()">sign in </button>
+    <button id="logoutBtn" onclick="logout()" style="display:none;">log out</button>
+  </div>
+
+  <script>
+    // ==========================================
+    // 1. 请把这里的配置换成你 Firebase 后台的代码！
+    // ==========================================
+    const firebaseConfig = {
+     apiKey: "AIzaSyCrRH3nh3wj6XqeJEdTpj-lMoZc_5de_8E",
+  authDomain: "cyberwandering-5e704.firebaseapp.com",
+  databaseURL: "https://cyberwandering-5e704-default-rtdb.firebaseio.com",
+  projectId: "cyberwandering-5e704",
+  storageBucket: "cyberwandering-5e704.firebasestorage.app",
+  messagingSenderId: "63210133888",
+  appId: "1:63210133888:web:12379237741a02cc728965",
+  measurementId: "G-22Q2E5NBT9"
+    };
+
+    // 初始化 Firebase
+    firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    const db = firebase.database();
+
+    // ==========================================
+    // 2. 核心算法区：名字 -> Emoji 面具 & 宿命坐标
+    // ==========================================
+    
+    // Hash 算法：把名字变成一串巨大数字
+    function nameToHash(name) {
+      let hash = 5381;
+      for (let i = 0; i < name.length; i++) {
+        hash = ((hash << 5) + hash) + name.charCodeAt(i);
+      }
+      return Math.abs(hash);
+    }
+
+    // 将 Hash 值映射到特定的 Emoji (从 😀 到 🤐 大约 56 个)
+    function getEmojiForName(name) {
+      let hash = nameToHash(name);
+      let baseCode = 128512; 
+      let offset = hash % 56; 
+      return String.fromCodePoint(baseCode + offset); 
+    }
+
+    // ASCII 累加算法：计算名字相似度，生成专属的屏幕百分比位置
+    function getNameAnchor(name) {
+      let sum = 0;
+      for (let i = 0; i < name.length; i++) {
+        sum += name.charCodeAt(i);
+      }
+      // 保证坐标在屏幕的 10% 到 90% 之间，名字相似的人算出来的百分比很接近
+      let xPct = (sum * 5.3) % 80 + 10; 
+      let yPct = (sum * 7.1) % 80 + 10; 
+      return { x: xPct, y: yPct };
+    }
+
+    // ==========================================
+    // 3. Firebase 身份与数据库交互逻辑
+    // ==========================================
+    let currentUser = null;
+    let otherUsers = {};
+    let myEmoji, mySize, myAnchor;
+
+    const provider = new firebase.auth.GoogleAuthProvider();
+
+    // 解决闪退：使用重定向登录而不是弹窗
+    function login() {
+  console.log("准备打开登录弹窗...");
+  auth.signInWithPopup(provider)
+    .then((result) => {
+      console.log("登录成功！你好，", result.user.displayName);
+    })
+    .catch((error) => {
+      // 这行代码会在页面上直接弹出一个报错对话框
+      alert("登录失败！具体原因：" + error.code + "\n" + error.message);
+      console.error("错误详情：", error);
+    });
+}
+
+    // 登出时：不删数据，而是把状态改成 offline，让自己变成赛博墓碑
+    function logout() {
+      if (currentUser) {
+        db.ref('users/' + currentUser.uid).update({ status: 'offline' }).then(() => {
+          auth.signOut();
+        });
+      }
+    }
+
+    // 监听登录状态
+    auth.onAuthStateChanged(user => {
+      if (user) {
+        currentUser = user;
+        document.getElementById('status').innerText = `Status: located - ${user.displayName}`;
+        document.getElementById('loginBtn').style.display = 'none';
+        document.getElementById('logoutBtn').style.display = 'inline-block';
+        
+        // 计算你的专属赛博属性
+        myEmoji = getEmojiForName(user.displayName);
+        mySize = 50; 
+        myAnchor = getNameAnchor(user.displayName);
+
+        const myRef = db.ref('users/' + currentUser.uid);
+
+        // 【极其重要】：告诉 Firebase，如果我关网页了，自动把我的状态设为 offline！
+        myRef.onDisconnect().update({ status: 'offline' });
+
+        // 上线！写入你的基础数据
+        myRef.set({
+          name: user.displayName,
+          emoji: myEmoji,
+          size: mySize,
+          baseX: myAnchor.x, // 宿命坐标 (vw)
+          baseY: myAnchor.y, // 宿命坐标 (vh)
+          currentX: windowWidth / 2, // 初始位置
+          currentY: windowHeight / 2,
+          status: 'online'
+        });
+      } else {
+        currentUser = null;
+        document.getElementById('status').innerText = 'Status: 匿名游魂 (Ghost Mode)';
+        document.getElementById('loginBtn').style.display = 'inline-block';
+        document.getElementById('logoutBtn').style.display = 'none';
+      }
+    });
+
+    // 监听数据库里所有人的动态
+    db.ref('users').on('value', snapshot => {
+      otherUsers = snapshot.val() || {};
+    });
+
+    // ==========================================
+    // 4. p5.js 视觉渲染引擎 (多重宇宙叠加态)
+    // ==========================================
+    function setup() {
+      createCanvas(windowWidth, windowHeight);
+      noStroke();
+    }
+
+    function draw() {
+      // 画一层带透明度的黑底，形成拖影和混沌感
+      background(10, 10, 10, 40);
+
+      // --- 画背景：其他用户 ---
+      for (let uid in otherUsers) {
+        if (currentUser && uid === currentUser.uid) continue; 
+        
+        let u = otherUsers[uid];
+        let drawX, drawY;
+        let currentSize = u.size;
+        let opacity = 255;
+
+        // 如果这个人下线了 (赛博墓碑状态)
+        if (u.status === 'offline') {
+          // 换算成实际屏幕像素
+          drawX = (u.baseX / 100) * width;
+          drawY = (u.baseY / 100) * height;
+          
+          // 呼吸动画：根据时间帧和他的宿命 X 坐标产生错落有致的脉冲
+          let pulse = sin(frameCount * 0.05 + u.baseX) * 15; 
+          currentSize += pulse;
+          opacity = map(pulse, -15, 15, 30, 100); // 离线的人是半透明且闪烁的
+        } 
+        // 如果这个人在线
+        else {
+          drawX = u.currentX;
+          drawY = u.currentY;
+          opacity = 200; // 在线的人更清晰
+        }
+
+        // 渲染其他人的 Emoji 面具
+        push();
+        fill(255, opacity);
+        textSize(currentSize);
+        textAlign(CENTER, CENTER);
+        text(u.emoji || '👤', drawX, drawY); 
+        
+        // 只有当你鼠标靠近他们时，才剥去面具，显示真名
+        if (dist(mouseX, mouseY, drawX, drawY) < 60) {
+          textSize(12);
+          fill(255, opacity + 50);
+          text(u.name, drawX, drawY + currentSize/2 + 15);
+        }
+        pop();
+      }
+
+      // --- 画主体：你自己 ---
+      if (currentUser) {
+        // 你是这个宇宙绝对清晰的主体
+        textSize(mySize);
+        textAlign(CENTER, CENTER);
+        text(myEmoji, mouseX, mouseY); 
+
+        // 始终显示自己的真名
+        textSize(14);
+        fill(255);
+        text(currentUser.displayName, mouseX, mouseY + mySize/2 + 15);
+
+        // 每隔 3 帧向 Firebase 发送你最新的鼠标位置
+        if (frameCount % 3 === 0) {
+          db.ref('users/' + currentUser.uid).update({
+            currentX: mouseX,
+            currentY: mouseY,
+            status: 'online' // 确保移动时状态是在线
+          });
+        }
+      } 
+      // --- 匿名状态 ---
+      else {
+        // 未登录的游魂：只能看到漫天繁星，自己只是一团白雾，无法留下痕迹
+        fill(255, 255, 255, random(10, 50));
+        ellipse(mouseX + random(-20, 20), mouseY + random(-20, 20), random(5, 15));
+      }
+    }
+
+    // 窗口自适应
+    function windowResized() {
+      resizeCanvas(windowWidth, windowHeight);
+    }
+  </script>
+</body>
+</html>

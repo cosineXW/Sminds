@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>赛博语义星图 - 空间加强版</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; color: #eee; font-family: 'Courier New', monospace; }
+        #THREEcontainer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; pointer-events: none; display: flex; flex-direction: column; justify-content: space-between; padding: 20px; box-sizing: border-box; }
+        .header, .footer { pointer-events: auto; }
+        
+        .topic-switcher select { background: rgba(0,0,0,0.8); color: #0f0; border: 1px solid #0f0; padding: 10px; font-size: 16px; cursor: pointer; }
+        .btn-group { display: flex; gap: 10px; align-items: center; }
+        #login-btn { background: #4285F4; color: white; border: none; padding: 10px 15px; border-radius: 5px; cursor: pointer; font-weight: bold; }
+        #logout-btn { background: #333; color: #999; border: 1px solid #555; padding: 10px 15px; border-radius: 5px; cursor: pointer; display: none; }
+        
+        #input-container { background: rgba(0,0,0,0.9); border: 2px solid #0f0; padding: 20px; border-radius: 12px; width: 500px; display: none; flex-direction: column; gap: 10px; margin: 0 auto; box-shadow: 0 0 15px #0f0; }
+        #view-input { background: transparent; border: none; border-bottom: 1px solid #0f0; color: #0f0; font-size: 18px; outline: none; padding: 8px; }
+        #submit-btn { background: #0f0; color: #000; border: none; padding: 12px; cursor: pointer; font-weight: bold; }
+
+        #user-info { display: none; align-items: center; gap: 10px; background: rgba(0,255,0,0.1); padding: 5px 12px; border-radius: 20px; border: 1px solid #0f0; }
+        #user-photo { width: 28px; height: 28px; border-radius: 50%; }
+
+        #loading-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #000; z-index: 100; display: flex; flex-direction: column; justify-content: center; align-items: center; }
+        .spinner { border: 4px solid #111; border-top: 4px solid #0f0; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+    <div id="THREEcontainer"></div>
+
+    <div id="ui-layer">
+        <div class="header" style="display: flex; justify-content: space-between;">
+            <div class="topic-switcher">
+                <select id="topic-select" onchange="switchTopic(this.value)">
+                    <option value="ai_art">AI 艺术 vs 人类艺术</option>
+                    <option value="future">2077 年的世界会更好吗？</option>
+                </select>
+            </div>
+            
+            <div class="btn-group">
+                <div id="user-info">
+                    <img id="user-photo" src="">
+                    <span id="user-name"></span>
+                </div>
+                <button id="login-btn">GOOGLE LOGIN</button>
+                <button id="logout-btn">LOGOUT</button>
+            </div>
+        </div>
+
+        <div class="footer">
+            <div id="input-container">
+                <input type="text" id="view-input" placeholder="输入你的观点... (长文字会自动换行)">
+                <button id="submit-btn">发射观点</button>
+            </div>
+            <div id="guest-msg" style="color: #444; font-size: 12px; text-align: center; width: 100%;">[ 登录后即可在星图留下足迹 ]</div>
+        </div>
+    </div>
+
+    <div id="loading-overlay">
+        <div class="spinner"></div>
+        <p style="color: #0f0; margin-top: 20px;">正在载入语义隧道模型...</p>
+    </div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.1/three.module.min.js",
+            "three/addons/": "https://unpkg.com/three@0.160.1/examples/jsm/"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.1';
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-app.js";
+        import { getAuth, signInWithPopup, signOut, GoogleAuthProvider, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-auth.js";
+        import { getDatabase, ref, set, onValue, off } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-database.js";
+
+        env.allowLocalModels = false;
+
+        // --- 1. FIREBASE CONFIG ---
+        const firebaseConfig = {
+           apiKey: "AIzaSyA73oNDKOPBW9TsfxS9z3D1zoHnTReSY4I",
+  authDomain: "new-social-media-49e1b.firebaseapp.com",
+  databaseURL: "https://new-social-media-49e1b-default-rtdb.firebaseio.com",
+  projectId: "new-social-media-49e1b",
+  storageBucket: "new-social-media-49e1b.firebasestorage.app",
+  messagingSenderId: "156229387049",
+  appId: "1:156229387049:web:02efe89d03acc69c9b2d38",
+  measurementId: "G-5TQVHWZQLP"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getDatabase(app);
+        const provider = new GoogleAuthProvider();
+
+        const yellowFaces = ["😀", "😁", "🤣", "🫠", "😎", "🤔", "🧐", "🙄", "😤", "😭", "🤯", "🥳", "😱", "😴", "🤩", "😈"];
+        const topicAnchors = {
+            'ai_art': { left: "AI 只是冰冷的算法。", right: "AI 是创意的无限延伸。" },
+            'future': { left: "未来是赛博朋克的末路。", right: "未来是技术民主的乐园。" }
+        };
+
+        let camera, scene, renderer, controls, starGroup, lineMesh;
+        let semanticPipeline, currentUser = null, currentTopicId = 'ai_art';
+
+        async function init() {
+            semanticPipeline = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
+            document.getElementById('loading-overlay').style.display = 'none';
+            init3D();
+            initAuth();
+            document.getElementById('login-btn').addEventListener('click', () => signInWithPopup(auth, provider));
+            document.getElementById('logout-btn').addEventListener('click', () => signOut(auth));
+            document.getElementById('submit-btn').addEventListener('click', submitView);
+        }
+
+        function init3D() {
+            scene = new THREE.Scene();
+            scene.fog = new THREE.FogExp2(0x000000, 0.0006);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 5000);
+            camera.position.set(0, 100, 400); // 默认相机位置在隧道内部
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.getElementById('THREEcontainer').appendChild(renderer.domElement);
+
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+
+            // --- 空间感加强：辅助物 ---
+            // 1. 隧道外骨架 (Wireframe Cylinder)
+            const tunnelGeo = new THREE.CylinderGeometry(400, 400, 1500, 24, 20, true);
+            const tunnelMat = new THREE.MeshBasicMaterial({ color: 0x111111, wireframe: true, transparent: true, opacity: 0.1 });
+            const tunnel = new THREE.Mesh(tunnelGeo, tunnelMat);
+            tunnel.rotation.z = Math.PI / 2; // 让它横过来，顺着 X 轴
+            scene.add(tunnel);
+
+            // 2. 中轴线 (Axis)
+            const axisGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-800, 0, 0), new THREE.Vector3(800, 0, 0)]);
+            const axisLine = new THREE.Line(axisGeo, new THREE.LineBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.2 }));
+            scene.add(axisLine);
+
+            starGroup = new THREE.Group();
+            scene.add(starGroup);
+
+            const lineMat = new THREE.LineBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.08 });
+            lineMesh = new THREE.LineSegments(new THREE.BufferGeometry(), lineMat);
+            scene.add(lineMesh);
+
+            window.addEventListener('resize', onWindowResize);
+            animate();
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            const time = Date.now() * 0.001;
+
+            starGroup.children.forEach(group => {
+                if(!group.userData.isStar) return;
+                group.position.y += Math.sin(time + group.userData.phase) * 0.1;
+
+                const dist = camera.position.distanceTo(group.position);
+                const isNear = dist < 220; 
+                group.userData.label.visible = isNear;
+                group.userData.glow.visible = isNear;
+
+                if (isNear) {
+                    group.userData.label.material.opacity = Math.min(1, (220 - dist) / 60);
+                }
+            });
+            renderer.render(scene, camera);
+        }
+
+        // --- 文字分段绘制算法 ---
+        function createWrappedTextTexture(text, name) {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = 1024;
+            canvas.height = 512; // 给高一点，防止换行后出界
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // 写名字 (顶部，亮色)
+            ctx.fillStyle = "#0f0";
+            ctx.font = "bold 45px Arial";
+            ctx.textAlign = "center";
+            ctx.fillText(`@${name}`, 512, 60);
+
+            // 写正文 (分段逻辑)
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "38px Arial";
+            
+            const words = text.split(""); // 一个个字拆
+            let line = "";
+            let lines = [];
+            const maxWidth = 800; // 每行最大宽度
+
+            for (let n = 0; n < words.length; n++) {
+                let testLine = line + words[n];
+                let metrics = ctx.measureText(testLine);
+                if (metrics.width > maxWidth && n > 0) {
+                    lines.push(line);
+                    line = words[n];
+                } else {
+                    line = testLine;
+                }
+            }
+            lines.push(line);
+
+            // 循环画每一行
+            lines.forEach((l, i) => {
+                ctx.fillText(l, 512, 130 + (i * 50));
+            });
+
+            const tex = new THREE.Texture(canvas);
+            tex.needsUpdate = true;
+            return tex;
+        }
+
+        function createStarObject(data) {
+            const group = new THREE.Group();
+            group.position.set(data.pos.x, data.pos.y, data.pos.z);
+            group.userData.phase = Math.random() * Math.PI * 2;
+
+            // 1. Emoji (Sprite)
+            const face = yellowFaces[getIdHash(data.uid) % yellowFaces.length];
+            const faceTex = createSimpleTexture(face, 128, 90);
+            const faceMat = new THREE.SpriteMaterial({ map: faceTex });
+            const faceSprite = new THREE.Sprite(faceMat);
+            const s = mapRange(data.radius, 40, 400, 25, 65);
+            faceSprite.scale.set(s, s, 1);
+            group.add(faceSprite);
+
+            // 2. 分段文字标签
+            const labelTex = createWrappedTextTexture(data.text, data.name);
+            const labelMat = new THREE.SpriteMaterial({ map: labelTex, transparent: true, opacity: 0 });
+            const labelSprite = new THREE.Sprite(labelMat);
+            labelSprite.position.y = -s * 0.8 - 40; // 放在 Emoji 下方
+            labelSprite.scale.set(s * 6, s * 3, 1); 
+            labelSprite.visible = false;
+            group.add(labelSprite);
+            group.userData.label = labelSprite;
+
+            // 3. 光晕
+            const glowTex = createGlowTexture();
+            const glowMat = new THREE.SpriteMaterial({ map: glowTex, transparent: true, opacity: 0.3, blending: THREE.AdditiveBlending });
+            const glowSprite = new THREE.Sprite(glowMat);
+            glowSprite.scale.set(s * 2.8, s * 2.8, 1);
+            glowSprite.visible = false;
+            group.add(glowSprite);
+            group.userData.glow = glowSprite;
+
+            group.userData.isStar = true;
+            return group;
+        }
+
+        // --- 辅助绘图 ---
+        function createSimpleTexture(text, size, fontSize) {
+            const canvas = document.createElement('canvas');
+            canvas.width = size; canvas.height = size;
+            const ctx = canvas.getContext('2d');
+            ctx.font = `${fontSize}px Arial`;
+            ctx.textAlign = "center"; ctx.textBaseline = "middle";
+            ctx.fillText(text, size/2, size/2);
+            const tex = new THREE.Texture(canvas);
+            tex.needsUpdate = true;
+            return tex;
+        }
+
+        function createGlowTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 64; canvas.height = 64;
+            const ctx = canvas.getContext('2d');
+            const g = ctx.createRadialGradient(32,32,0, 32,32,32);
+            g.addColorStop(0, 'rgba(0,255,0,0.8)');
+            g.addColorStop(1, 'rgba(0,0,0,0)');
+            ctx.fillStyle = g; ctx.fillRect(0,0,64,64);
+            const tex = new THREE.Texture(canvas);
+            tex.needsUpdate = true;
+            return tex;
+        }
+
+        // --- 数据处理 ---
+        async function submitView() {
+            const input = document.getElementById('view-input').value;
+            if (!currentUser || input.trim().length < 2) return;
+            const btn = document.getElementById('submit-btn');
+            btn.disabled = true;
+
+            const anchors = topicAnchors[currentTopicId];
+            const out = await semanticPipeline([input, anchors.left, anchors.right], { pooling: 'mean', normalize: true });
+            const score = (out[2].data[0] - out[1].data[0]) * 3;
+
+            const x = Math.max(-1, Math.min(1, score)) * 600;
+            const r = Math.min(50 + input.length * 5, 400);
+            const angle = (getIdHash(currentUser.uid) % 1000 / 1000) * Math.PI * 2;
+
+            const data = {
+                uid: currentUser.uid, name: currentUser.displayName, text: input,
+                pos: { x: x, y: Math.sin(angle) * r, z: Math.cos(angle) * r },
+                radius: r, timestamp: Date.now()
+            };
+
+            await set(ref(db, `topics/${currentTopicId}/users/${currentUser.uid}`), data);
+            document.getElementById('view-input').value = "";
+            btn.disabled = false;
+        }
+
+        function updateLines() {
+            const stars = starGroup.children;
+            const pts = [];
+            for(let i=0; i<stars.length; i++) {
+                for(let j=i+1; j<stars.length; j++) {
+                    if(stars[i].position.distanceTo(stars[j].position) < 200) {
+                        pts.push(stars[i].position.x, stars[i].position.y, stars[i].position.z);
+                        pts.push(stars[j].position.x, stars[j].position.y, stars[j].position.z);
+                    }
+                }
+            }
+            lineMesh.geometry.dispose();
+            lineMesh.geometry.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+        }
+
+        function initAuth() {
+            onAuthStateChanged(auth, user => {
+                currentUser = user;
+                const isLogin = !!user;
+                document.getElementById('login-btn').style.display = isLogin ? 'none' : 'block';
+                document.getElementById('logout-btn').style.display = isLogin ? 'block' : 'none';
+                document.getElementById('user-info').style.display = isLogin ? 'flex' : 'none';
+                document.getElementById('input-container').style.display = isLogin ? 'flex' : 'none';
+                document.getElementById('guest-msg').style.display = isLogin ? 'none' : 'block';
+                if(user) {
+                    document.getElementById('user-photo').src = user.photoURL;
+                    document.getElementById('user-name').innerText = user.displayName;
+                }
+            });
+            listenToTopic(currentTopicId);
+        }
+
+        function listenToTopic(tid) {
+            off(ref(db, `topics/${currentTopicId}/users`));
+            currentTopicId = tid;
+            onValue(ref(db, `topics/${tid}/users`), snap => {
+                starGroup.clear();
+                if(snap.exists()) {
+                    Object.values(snap.val()).forEach(d => starGroup.add(createStarObject(d)));
+                    updateLines();
+                }
+            });
+        }
+
+        function getIdHash(s) {
+            let h = 0; for(let i=0; i<s.length; i++) h = s.charCodeAt(i) + ((h << 5) - h);
+            return Math.abs(h);
+        }
+        function mapRange(v, l1, h1, l2, h2) { 
+            return l2 + (h2 - l2) * (Math.max(l1, Math.min(h1, v)) - l1) / (h1 - l1); 
+        }
+        function onWindowResize() { 
+            camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); 
+        }
+        window.switchTopic = listenToTopic;
+        init();
+    </script>
+</body>
+</html>
