@@ -33,9 +33,7 @@
     <video id="webcam" playsinline autoplay width="640" height="480"></video>
 
 <script>
-// ============================================================
-//  Perlin Noise (classic implementation)
-// ============================================================
+// --- Perlin Noise ---
 const PerlinNoise = (() => {
     const p = [];
     const permutation = [151,160,137,91,90,15,131,13,201,95,96,53,194,233,7,225,140,36,103,30,69,142,8,99,37,240,21,10,23,190,6,148,247,120,234,75,0,26,197,62,94,252,219,203,117,35,11,32,57,177,33,88,237,149,56,87,174,20,125,136,171,168,68,175,74,165,71,134,139,48,27,166,77,146,158,231,83,111,229,122,60,211,133,230,220,105,92,41,55,46,245,40,244,102,143,54,65,25,63,161,1,216,80,73,209,76,132,187,208,89,18,169,200,196,135,130,116,188,159,86,164,100,109,198,173,186,3,64,52,217,226,250,124,123,5,202,38,147,118,126,255,82,85,212,207,206,59,227,47,16,58,17,182,189,28,42,223,183,170,213,119,248,152,2,44,154,163,70,221,153,101,155,167,43,172,9,129,22,39,253,19,98,108,110,79,113,224,232,178,185,112,104,218,246,97,228,251,34,242,193,238,210,144,12,191,179,162,241,81,51,145,235,249,14,239,107,49,192,214,31,181,199,106,157,184,84,204,176,115,121,50,45,127,4,150,254,138,236,205,93,222,114,67,29,24,72,243,141,128,195,78,66,215,61,156,180];
@@ -64,42 +62,35 @@ const PerlinNoise = (() => {
     };
 })();
 
-// ============================================================
-//  Global variables
-// ============================================================
+// --- Global variables ---
 let scene, camera, cameraGroup, renderer;
 let faceMesh, video;
 let facePredictions = [];
 let isFaceReady = false, isHandReady = false;
-// MediaPipe Hands results: multiHandLandmarks is an array, 21 normalized coords (0~1) per hand
 let mpHandResults = null;
-
-// Scene objects
 let fishes = [];
 let weeds = [];
 let lotusLeaves = [];
 let godRays = [];
-// Dual hand support: each hand has its own world coordinates and state
 let handWorldPositions = [new THREE.Vector3(), new THREE.Vector3()];
 let handActive = false;
 let activeHandCount = 0;
-
-// Hand outline rendering (using handArray path: trace along fingers and back)
 const handArray = [
     1, 2, 3, 4, 3, 2, 5, 6, 7, 8, 7, 6, 5,
     9, 10, 11, 12, 11, 10, 9, 13, 14, 15, 16,
     15, 14, 13, 17, 18, 19, 20, 19, 18, 17, 0
 ];
-let handLineMeshes = [null, null]; // outline lines for both hands
-let handGlows = [null, null]; // glow sprites for both hands
-
+let handLineMeshes = [null, null];
+let handGlows = [null, null];
+const raycaster = new THREE.Raycaster();
+raycaster.far = 30;
+let rayTargets = [];
+let highlightedObjects = new Set();
 const clock = new THREE.Clock();
 const statusEl = document.getElementById('status');
 const debugEl = document.getElementById('debug');
 
-// ============================================================
-//  Startup
-// ============================================================
+// --- Startup ---
 window.onload = async () => {
     initThreeJS();
     createScene();
@@ -108,9 +99,7 @@ window.onload = async () => {
     animate();
 };
 
-// ============================================================
-//  1. Three.js initialization — supine underwater perspective
-// ============================================================
+// --- 1. Three.js initialization —supine underwater perspective ---
 function initThreeJS() {
     scene = new THREE.Scene();
     // Shallow underwater background — brighter, more sunlit
@@ -155,9 +144,7 @@ function initThreeJS() {
     });
 }
 
-// ============================================================
-//  2. Build underwater scene
-// ============================================================
+// --- 2. Build underwater scene ---
 function createScene() {
     createWaterSurface();
     createGodRays();
@@ -166,11 +153,11 @@ function createScene() {
     createWeeds();
     createBubbles();
     createHandOutline();
+    buildRayTargets();
 }
 
-// --- Hand outline (initialization, both hands) ---
+// --- Hand outline ---
 function createHandOutline() {
-    // Glow texture (shared)
     const glowCanvas = document.createElement('canvas');
     glowCanvas.width = 64; glowCanvas.height = 64;
     const gCtx = glowCanvas.getContext('2d');
@@ -181,30 +168,20 @@ function createHandOutline() {
     gCtx.fillStyle = gradient;
     gCtx.fillRect(0, 0, 64, 64);
     const glowTex = new THREE.CanvasTexture(glowCanvas);
-
     for (let h = 0; h < 2; h++) {
-        // Outline line
         const maxPoints = handArray.length + 1;
         const positions = new Float32Array(maxPoints * 3);
         const geometry = new THREE.BufferGeometry();
         geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
         geometry.setDrawRange(0, 0);
-
         const material = new THREE.LineBasicMaterial({
-            color: 0x88ddff,
-            transparent: true,
-            opacity: 0.6,
-            linewidth: 1,
-            blending: THREE.AdditiveBlending,
-            depthWrite: false
+            color: 0x88ddff, transparent: true, opacity: 0.6, linewidth: 1,
+            blending: THREE.AdditiveBlending, depthWrite: false
         });
-
         const lineMesh = new THREE.Line(geometry, material);
         lineMesh.visible = false;
         scene.add(lineMesh);
         handLineMeshes[h] = lineMesh;
-
-        // Glow sprite
         const spriteMat = new THREE.SpriteMaterial({
             map: glowTex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false
         });
@@ -216,79 +193,161 @@ function createHandOutline() {
     }
 }
 
-// --- 2a. Water surface (translucent plane at height) ---
+// --- Build ray target list from all interactive objects ---
+function buildRayTargets() {
+    rayTargets = [];
+    // Fish bodies
+    fishes.forEach(f => { if (f.body) rayTargets.push(f.body); });
+    // Interactive lotus leaves
+    lotusLeaves.forEach(l => { if (l.interactive) rayTargets.push(l.mesh); });
+    // Interactive weed stalks (children of group)
+    weeds.forEach(w => {
+        if (w.interactive) {
+            w.group.children.forEach(child => { if (child.isMesh) rayTargets.push(child); });
+        }
+    });
+}
+
+// --- Raycasting: detect what each hand is pointing at ---
+function updateRaycasting() {
+    // Reset all highlights
+    highlightedObjects.forEach(obj => {
+        if (obj.material && obj.material._origEmissive !== undefined) {
+            obj.material.emissive.setHex(obj.material._origEmissive);
+        }
+    });
+    highlightedObjects.clear();
+
+    if (!handActive) return;
+
+    for (let h = 0; h < activeHandCount; h++) {
+        const hp = handWorldPositions[h];
+        // Cast ray upward from hand position (since camera looks up, objects are above)
+        const direction = new THREE.Vector3(0, 1, 0);
+        raycaster.set(hp, direction);
+        raycaster.far = 20;
+
+        // Also check nearby objects with proximity (raycasting can miss small geometry)
+        let closestObj = null, closestDist = 6; // max proximity radius
+        rayTargets.forEach(obj => {
+            const worldPos = new THREE.Vector3();
+            obj.getWorldPosition(worldPos);
+            const d = hp.distanceTo(worldPos);
+            if (d < closestDist) {
+                closestDist = d;
+                closestObj = obj;
+            }
+        });
+
+        // Prefer raycasting hit, fall back to proximity
+        const hits = raycaster.intersectObjects(rayTargets, true);
+        const hitObj = hits.length > 0 ? hits[0].object : closestObj;
+
+        if (hitObj) {
+            const obj = hitObj;
+            const ud = obj.userData;
+
+            // Highlight the targeted object (blue glow)
+            if (obj.material && obj.material.emissive) {
+                if (obj.material._origEmissive === undefined) {
+                    obj.material._origEmissive = obj.material.emissive.getHex();
+                }
+                const glowIntensity = Math.max(0.2, 0.6 - closestDist * 0.06);
+                obj.material.emissive.setHex(0x44aaff);
+                obj.material.emissive.multiplyScalar(glowIntensity / 0.3);
+                highlightedObjects.add(obj);
+            }
+
+            // Apply push force to the targeted object
+            if (ud.type === 'fish') {
+                const fish = fishes[ud.index];
+                if (fish) {
+                    const g = fish.group;
+                    const dx = g.position.x - hp.x;
+                    const dz = g.position.z - hp.z;
+                    const dy = g.position.y - hp.y;
+                    const dist = Math.sqrt(dx*dx + dz*dz + dy*dy);
+                    if (dist > 0.1) {
+                        const force = 0.6;
+                        fish.pushVelocity.set(dx/dist*force, dy/dist*force*0.3, dz/dist*force);
+                        fish.scared = Math.min(fish.scared + 0.4, 1.0);
+                        spawnInterBubbles(g.position.x, g.position.y, g.position.z, 3);
+                    }
+                }
+            } else if (ud.type === 'lotus') {
+                const leaf = lotusLeaves[ud.index];
+                if (leaf && leaf.interactive) {
+                    const m = leaf.mesh;
+                    const dx = m.position.x - hp.x;
+                    const dz = m.position.z - hp.z;
+                    const dist = Math.sqrt(dx*dx + dz*dz) || 1;
+                    const force = 0.2;
+                    leaf.pushVelocity.x += dx/dist * force;
+                    leaf.pushVelocity.z += dz/dist * force;
+                }
+            } else if (ud.type === 'weed') {
+                const weed = weeds[ud.index];
+                if (weed && weed.interactive) {
+                    const g = weed.group;
+                    const dx = g.position.x - hp.x;
+                    const dz = g.position.z - hp.z;
+                    weed.pushStrength = Math.min(weed.pushStrength + 0.03, 0.5);
+                    weed.pushAngle = Math.atan2(dz, dx);
+                }
+            }
+        }
+    }
+}
+
+// --- 2a. Water surface ---
 function createWaterSurface() {
-    // Main water surface
     const geo = new THREE.PlaneGeometry(200, 200, 60, 60);
     const mat = new THREE.MeshPhongMaterial({
-        color: 0x88ccdd,
-        transparent: true,
-        opacity: 0.15,
-        side: THREE.DoubleSide,
-        shininess: 100
+        color: 0x88ccdd, transparent: true, opacity: 0.15,
+        side: THREE.DoubleSide, shininess: 100
     });
     const surface = new THREE.Mesh(geo, mat);
     surface.rotation.x = -Math.PI / 2;
     surface.position.y = 25;
     scene.add(surface);
-
-    // Caustic texture layer (simulated with a second plane)
     const causticGeo = new THREE.PlaneGeometry(200, 200, 40, 40);
     const causticMat = new THREE.MeshBasicMaterial({
-        color: 0x66bbdd,
-        transparent: true,
-        opacity: 0.08,
+        color: 0x66bbdd, transparent: true, opacity: 0.08,
         side: THREE.DoubleSide
     });
     const caustic = new THREE.Mesh(causticGeo, causticMat);
     caustic.rotation.x = -Math.PI / 2;
     caustic.position.y = 24.5;
     scene.add(caustic);
-    // Store for later wave animation
     scene.userData.waterSurface = surface;
     scene.userData.caustic = caustic;
 }
 
-// --- 2b. God Rays (semi-realistic light shafts) ---
+// --- 2b. God Rays ---
 function createGodRays() {
     const rayCount = 12;
     for (let i = 0; i < rayCount; i++) {
         const width = 2 + Math.random() * 5;
         const height = 25 + Math.random() * 10;
         const geo = new THREE.PlaneGeometry(width, height);
-        // Mix of warm golden and cool blue-white rays
         const isWarm = Math.random() > 0.4;
         const rayColor = isWarm ? 0xffeebb : 0xddeeff;
         const mat = new THREE.MeshBasicMaterial({
-            color: rayColor,
-            transparent: true,
+            color: rayColor, transparent: true,
             opacity: 0.06 + Math.random() * 0.08,
-            side: THREE.DoubleSide,
-            depthWrite: false,
+            side: THREE.DoubleSide, depthWrite: false,
             blending: THREE.AdditiveBlending
         });
         const ray = new THREE.Mesh(geo, mat);
-
-        // Spread above the viewer — closer for shallow water feel
         const angle = (i / rayCount) * Math.PI * 2;
         const radius = 3 + Math.random() * 15;
-        ray.position.set(
-            Math.cos(angle) * radius,
-            10 + Math.random() * 10,
-            Math.sin(angle) * radius
-        );
-        // Slightly tilted, not perfectly vertical
+        ray.position.set(Math.cos(angle) * radius, 10 + Math.random() * 10, Math.sin(angle) * radius);
         ray.rotation.x = (Math.random() - 0.5) * 0.3;
         ray.rotation.z = (Math.random() - 0.5) * 0.3;
-
         scene.add(ray);
         godRays.push({
-            mesh: ray,
-            baseOpacity: mat.opacity,
-            phase: Math.random() * Math.PI * 2,
-            speed: 0.3 + Math.random() * 0.5,
-            baseX: ray.position.x,
-            baseZ: ray.position.z
+            mesh: ray, baseOpacity: mat.opacity, phase: Math.random() * Math.PI * 2,
+            speed: 0.3 + Math.random() * 0.5, baseX: ray.position.x, baseZ: ray.position.z
         });
     }
 }
@@ -361,8 +420,13 @@ function createFishes() {
         group.scale.setScalar(scale);
         scene.add(group);
 
+        // Tag body mesh so raycaster can identify it
+        body.userData.type = 'fish';
+        body.userData.index = i;
+
         fishes.push({
             group: group,
+            body: body,
             tail: tail,
             // Noise params: each fish has a unique offset
             noiseOffsetX: Math.random() * 100,
@@ -382,9 +446,8 @@ function createFishes() {
 function createLotusLeaves() {
     // Grid + random offset ensures even spread, no clustering
     // Divide XZ plane into grid cells, place one leaf per cell
-    const gridSize = 8;   // 8x8 grid
-    const cellSize = 10;  // 10 world units per cell — more breathing room
-    const totalLeaves = [];
+    const gridSize = 8;
+    const cellSize = 10;
 
     for (let gx = 0; gx < gridSize; gx++) {
         for (let gz = 0; gz < gridSize; gz++) {
@@ -474,6 +537,12 @@ function createLotusLeaves() {
             veinsGroup.rotation.x = -Math.PI / 2;
             veinsGroup.rotation.z = leaf.rotation.z; // follow leaf rotation
             veinsGroup.position.copy(leaf.position);
+            // Tag leaf for raycasting
+            if (interactive) {
+                leaf.userData.type = 'lotus';
+                leaf.userData.index = lotusLeaves.length;
+            }
+
             scene.add(veinsGroup);
             scene.add(leaf);
 
@@ -565,6 +634,14 @@ function createWeeds() {
                 Math.sin(angle) * dist
             );
 
+            // Tag weed stalks for raycasting
+            if (layer.interactive) {
+                group.children.forEach(child => {
+                    child.userData.type = 'weed';
+                    child.userData.index = weeds.length;
+                });
+            }
+
             scene.add(group);
             weeds.push({
                 group: group,
@@ -626,9 +703,7 @@ function createBubbles() {
     }
 }
 
-// ============================================================
-//  3. Webcam + ml5 initialization
-// ============================================================
+// --- 3. Webcam + ml5 initialization ---
 async function initWebcam() {
     video = document.getElementById('webcam');
     try {
@@ -687,9 +762,7 @@ function checkReady() {
     }
 }
 
-// ============================================================
-//  4. Main animation loop
-// ============================================================
+// --- 4. Main animation loop ---
 function animate() {
     requestAnimationFrame(animate);
     const t = clock.getElapsedTime();
@@ -697,13 +770,11 @@ function animate() {
     debugEl.innerHTML = '';
     updateHeadTracking(t);
     updateHandTracking(t);
+    updateRaycasting();
     updateFishes(t);
     updateLotusLeaves(t);
     updateWeeds(t);
-    updateGodRays(t);
-    updateWaterSurface(t);
-    updateBubbles(t);
-
+    updateEnvironment(t);
     renderer.render(scene, camera);
 }
 
@@ -860,66 +931,28 @@ function updateHandTracking(t) {
 function updateFishes(t) {
     fishes.forEach(fish => {
         const g = fish.group;
-
-        // Noise-driven natural swimming
         const nx = PerlinNoise.noise(fish.noiseOffsetX + t * fish.speed, 0, 0);
         const nz = PerlinNoise.noise(0, fish.noiseOffsetZ + t * fish.speed, 0);
         const ny = PerlinNoise.noise(0, 0, fish.noiseOffsetY + t * fish.speed * 0.5);
-
-        // Base movement
         const moveX = nx * 0.12;
         const moveZ = nz * 0.12;
         const moveY = ny * 0.03;
-
-        // Push force decay
         fish.pushVelocity.multiplyScalar(fish.pushDecay);
         g.position.x += moveX + fish.pushVelocity.x;
         g.position.z += moveZ + fish.pushVelocity.z;
         g.position.y = fish.baseY + ny * 2 + fish.pushVelocity.y;
 
-        // Boundary limits
         const maxDist = 35;
-        if (g.position.x > maxDist) g.position.x = maxDist;
-        if (g.position.x < -maxDist) g.position.x = -maxDist;
-        if (g.position.z > maxDist) g.position.z = maxDist;
-        if (g.position.z < -maxDist) g.position.z = -maxDist;
-
-        // Face swimming direction
+        g.position.x = clamp(g.position.x, -maxDist, maxDist);
+        g.position.z = clamp(g.position.z, -maxDist, maxDist);
         const facing = Math.atan2(moveZ + fish.pushVelocity.z, moveX + fish.pushVelocity.x);
         g.rotation.y += (facing - g.rotation.y) * 0.05;
-
-        // Tail wagging: faster + wider when scared
         if (fish.tail) {
-            const tailFreq = 4 + fish.scared * 12;  // normal 4, scared up to 16
-            const tailAmp = 0.4 + fish.scared * 0.5; // normal 0.4, scared up to 0.9
+            const tailFreq = 4 + fish.scared * 12;
+            const tailAmp = 0.4 + fish.scared * 0.5;
             fish.tail.rotation.y = Math.sin(t * tailFreq + fish.noiseOffsetX) * tailAmp;
         }
-
-        // Hand interaction: fish scatter when hand is near
-        const FISH_INTERACT_RADIUS = 8;
-        fish.scared *= 0.96; // decay scared state
-        if (handActive) {
-            for (let h = 0; h < activeHandCount; h++) {
-                const hp = handWorldPositions[h];
-                const dx = g.position.x - hp.x;
-                const dz = g.position.z - hp.z;
-                const dy = g.position.y - hp.y;
-                const dist = Math.sqrt(dx * dx + dz * dz + dy * dy);
-                if (dist < FISH_INTERACT_RADIUS) {
-                    const force = (FISH_INTERACT_RADIUS - dist) / FISH_INTERACT_RADIUS * 0.8;
-                    fish.pushVelocity.set(
-                        dx / dist * force,
-                        dy / dist * force * 0.3,
-                        dz / dist * force
-                    );
-                    fish.scared = Math.min(fish.scared + 0.3, 1.0);
-                    // Spawn bubbles at fish position when startled
-                    if (fish.scared > 0.5 && Math.random() < 0.3) {
-                        spawnInterBubbles(g.position.x, g.position.y, g.position.z, 3);
-                    }
-                }
-            }
-        }
+        fish.scared *= 0.96;
     });
 }
 
@@ -927,42 +960,16 @@ function updateFishes(t) {
 function updateLotusLeaves(t) {
     lotusLeaves.forEach(leaf => {
         const m = leaf.mesh;
-
-        // Noise-driven gentle drift
         const driftX = PerlinNoise.noise(leaf.noiseOffset + t * 0.1, 0) * 0.02;
         const driftZ = PerlinNoise.noise(0, leaf.noiseOffset + t * 0.1) * 0.02;
         const bob = PerlinNoise.noise(leaf.noiseOffset, t * 0.3) * 0.3;
-
-        // Push force decay
         leaf.pushVelocity.multiplyScalar(leaf.pushDecay);
         m.position.x = leaf.baseX + driftX + leaf.pushVelocity.x;
         m.position.z = leaf.baseZ + driftZ + leaf.pushVelocity.z;
         m.position.y = leaf.baseY + bob;
-
-        // Slight rotation
         m.rotation.z = PerlinNoise.noise(leaf.noiseOffset + 50, t * 0.2) * 0.1;
-
-        // Veins follow leaf
         leaf.veins.position.copy(m.position);
         leaf.veins.rotation.z = m.rotation.z;
-
-        // Hand interaction: only near large leaves are interactive
-        if (handActive && leaf.interactive) {
-            for (let h = 0; h < activeHandCount; h++) {
-                const hp = handWorldPositions[h];
-                const dx = m.position.x - hp.x;
-                const dz = m.position.z - hp.z;
-                const dist = Math.sqrt(dx * dx + dz * dz);
-                if (dist < 5) {
-                    const force = (5 - dist) / 5 * 0.15;
-                    leaf.pushVelocity.x += dx / dist * force;
-                    leaf.pushVelocity.z += dz / dist * force;
-                    m.rotation.z += Math.sin(t * 8) * 0.05;
-                }
-            }
-        }
-
-        // Drift accumulation returns to base position
         leaf.baseX += (leaf.mesh.position.x - leaf.baseX) * 0.001;
         leaf.baseZ += (leaf.mesh.position.z - leaf.baseZ) * 0.001;
     });
@@ -972,101 +979,66 @@ function updateLotusLeaves(t) {
 function updateWeeds(t) {
     weeds.forEach(weed => {
         const g = weed.group;
-
-        // Noise-driven natural swaying
         const sway = PerlinNoise.noise(weed.noiseOffset + t * 0.3, 0) * 0.15;
-
-        // Hand push force decay
         weed.pushStrength *= weed.pushDecay;
-
-        // Combined bending
         const totalBend = sway + weed.pushStrength * Math.sin(weed.pushAngle);
         const totalBendZ = PerlinNoise.noise(0, weed.noiseOffset + t * 0.25) * 0.08
                           + weed.pushStrength * Math.cos(weed.pushAngle);
-
         g.rotation.x = totalBendZ;
         g.rotation.z = totalBend;
-
-        // Hand interaction: only near large seaweed is interactive
-        if (handActive && weed.interactive) {
-            for (let h = 0; h < activeHandCount; h++) {
-                const hp = handWorldPositions[h];
-                const dx = g.position.x - hp.x;
-                const dz = g.position.z - hp.z;
-                const dist = Math.sqrt(dx * dx + dz * dz);
-                if (dist < 5) {
-                    weed.pushStrength = Math.min(weed.pushStrength + 0.02, 0.5);
-                    weed.pushAngle = Math.atan2(dz, dx);
-                }
-            }
-        }
     });
 }
 
-// --- 4f. God Rays animation ---
-function updateGodRays(t) {
+function updateEnvironment(t) {
     godRays.forEach(ray => {
-        // Breathing-like brightness variation
         const flicker = PerlinNoise.noise(ray.phase + t * ray.speed, 0);
         ray.mesh.material.opacity = ray.baseOpacity * (0.5 + flicker * 0.7);
-
-        // Slight lateral drift
         ray.mesh.position.x = ray.baseX + Math.sin(t * 0.2 + ray.phase) * 0.5;
         ray.mesh.position.z = ray.baseZ + Math.cos(t * 0.15 + ray.phase) * 0.5;
     });
-}
-
-// --- 4g. Water surface waves ---
-function updateWaterSurface(t) {
     const surface = scene.userData.waterSurface;
-    if (!surface) return;
-
-    const positions = surface.geometry.attributes.position;
-    for (let i = 0; i < positions.count; i++) {
-        const x = positions.getX(i);
-        const z = positions.getZ(i);
-        const wave = PerlinNoise.noise(x * 0.05 + t * 0.3, z * 0.05 + t * 0.2) * 0.8;
-        positions.setY(i, wave);
-    }
-    positions.needsUpdate = true;
-}
-
-// --- 4h. Bubbles rising ---
-function updateBubbles(t) {
-    const bubbles = scene.userData.bubbles;
-    if (!bubbles) return;
-
-    const positions = bubbles.geometry.attributes.position;
-    for (let i = 0; i < positions.count; i++) {
-        let y = positions.getY(i);
-        y += 0.01 + Math.random() * 0.01;
-        if (y > 26) y = -2;
-        positions.setY(i, y);
-        // Slight horizontal drift
-        positions.setX(i, positions.getX(i) + (Math.random() - 0.5) * 0.02);
-    }
-    positions.needsUpdate = true;
-
-    // Update interaction bubbles
-    const ib = scene.userData.interBubbles;
-    if (!ib) return;
-    const ibPos = ib.geometry.attributes.position;
-    const ibData = scene.userData.interBubbleData;
-    for (let i = 0; i < ibData.length; i++) {
-        const d = ibData[i];
-        if (!d.active) continue;
-        d.life -= 0.016;
-        if (d.life <= 0) {
-            d.active = false;
-            ibPos.setXYZ(i, 0, -100, 0); // hide
-        } else {
-            ibPos.setX(i, ibPos.getX(i) + d.vx);
-            ibPos.setY(i, ibPos.getY(i) + d.vy);
-            ibPos.setZ(i, ibPos.getZ(i) + d.vz);
-            d.vy += 0.003; // float upward
+    if (surface) {
+        const positions = surface.geometry.attributes.position;
+        for (let i = 0; i < positions.count; i++) {
+            const x = positions.getX(i);
+            const z = positions.getZ(i);
+            const wave = PerlinNoise.noise(x * 0.05 + t * 0.3, z * 0.05 + t * 0.2) * 0.8;
+            positions.setY(i, wave);
         }
+        positions.needsUpdate = true;
     }
-    ibPos.needsUpdate = true;
+    const bubbles = scene.userData.bubbles;
+    if (bubbles) {
+        const positions = bubbles.geometry.attributes.position;
+        for (let i = 0; i < positions.count; i++) {
+            let y = positions.getY(i);
+            y += 0.01 + Math.random() * 0.01;
+            if (y > 26) y = -2;
+            positions.setY(i, y);
+            positions.setX(i, positions.getX(i) + (Math.random() - 0.5) * 0.02);
+        }
+        positions.needsUpdate = true;
+    }
+    const ib = scene.userData.interBubbles;
+    if (ib) {
+        const ibPos = ib.geometry.attributes.position;
+        const ibData = scene.userData.interBubbleData;
+        for (let i = 0; i < ibData.length; i++) {
+            const d = ibData[i];
+            if (!d.active) continue;
+            d.life -= 0.016;
+            if (d.life <= 0) {
+                d.active = false;
+                ibPos.setXYZ(i, 0, -100, 0);
+            } else {
+                ibPos.setX(i, ibPos.getX(i) + d.vx);
+                ibPos.setY(i, ibPos.getY(i) + d.vy);
+                ibPos.setZ(i, ibPos.getZ(i) + d.vz);
+                d.vy += 0.003;
+            }
+        }
+        ibPos.needsUpdate = true;
+    }
 }
 
 // Spawn a burst of interaction bubbles at a position
@@ -1088,9 +1060,7 @@ function spawnInterBubbles(x, y, z, count) {
     }
 }
 
-// ============================================================
-//  Utility functions
-// ============================================================
+// --- Utility functions ---
 function dist2D(x1, y1, x2, y2) {
     return Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
 }
