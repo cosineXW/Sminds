@@ -92,7 +92,6 @@ const handArray = [
 ];
 let handLineMeshes = [null, null]; // outline lines for both hands
 let handGlows = [null, null]; // glow sprites for both hands
-let handRadiusRings = [null, null]; // influence radius circles for both hands
 
 const clock = new THREE.Clock();
 const statusEl = document.getElementById('status');
@@ -208,22 +207,6 @@ function createHandOutline() {
         glow.visible = false;
         scene.add(glow);
         handGlows[h] = glow;
-
-        // Influence radius ring
-        const ringGeo = new THREE.RingGeometry(7.8, 8, 48);
-        const ringMat = new THREE.MeshBasicMaterial({
-            color: 0x88ddff,
-            transparent: true,
-            opacity: 0.15,
-            side: THREE.DoubleSide,
-            blending: THREE.AdditiveBlending,
-            depthWrite: false
-        });
-        const ring = new THREE.Mesh(ringGeo, ringMat);
-        ring.rotation.x = -Math.PI / 2; // lay flat in XZ plane
-        ring.visible = false;
-        scene.add(ring);
-        handRadiusRings[h] = ring;
     }
 }
 
@@ -303,7 +286,7 @@ function createGodRays() {
 
 // --- 2c. Fish (3D geometry, noise-driven swimming) ---
 function createFishes() {
-    const fishCount = 6; // Keep sparse for breathing room
+    const fishCount = 18; // More fish across the scene
     for (let i = 0; i < fishCount; i++) {
         const group = new THREE.Group();
 
@@ -386,20 +369,20 @@ function createFishes() {
     }
 }
 
-// --- 2d. 荷叶（均匀铺满整个视野，大小不一，近处可交互） ---
+// --- 2d. Lotus leaves (evenly spread across view, varied sizes, near ones interactive) ---
 function createLotusLeaves() {
-    // 用网格+随机偏移确保均匀铺满，不聚堆
-    // 在 XZ 平面上划格子，每格放一片荷叶
-    const gridSize = 8;   // 8x8 格子
-    const cellSize = 8;   // 每格 8 个世界单位
+    // Grid + random offset ensures even spread, no clustering
+    // Divide XZ plane into grid cells, place one leaf per cell
+    const gridSize = 8;   // 8x8 grid
+    const cellSize = 8;   // 8 world units per cell
     const totalLeaves = [];
 
     for (let gx = 0; gx < gridSize; gx++) {
         for (let gz = 0; gz < gridSize; gz++) {
-            // 跳过一些格子，不要太满（约60%填充率）
+            // Skip some cells to avoid overcrowding (~60% fill rate)
             if (Math.random() > 0.6) continue;
 
-            // 格子中心 + 随机偏移
+            // Cell center + random offset
             const cx = (gx - gridSize / 2 + 0.5) * cellSize + (Math.random() - 0.5) * cellSize * 0.7;
             const cz = (gz - gridSize / 2 + 0.5) * cellSize + (Math.random() - 0.5) * cellSize * 0.7;
             const distFromCenter = Math.sqrt(cx * cx + cz * cz);
@@ -418,10 +401,10 @@ function createLotusLeaves() {
                 interactive = false;
             }
 
-            // Y 高度：近处低一些（靠近你），远处高一些（靠近水面）
+            // Y height: lower when near (closer to you), higher when far (near water surface)
             const yPos = mapRange(clamp(distFromCenter, 0, 40), 0, 40, 18, 24.5);
 
-            // 荷叶形状（圆盘+V形缺口）
+            // Lotus leaf shape (disc + V-shaped notch)
             const shape = new THREE.Shape();
             const segments = 32;
             const gapStart = Math.random() * Math.PI * 2;
@@ -448,19 +431,19 @@ function createLotusLeaves() {
             });
             const leaf = new THREE.Mesh(geo, mat);
             leaf.rotation.x = -Math.PI / 2;
-            // 每片荷叶随机旋转一个角度，更自然
+            // Random rotation per leaf for a more natural look
             leaf.rotation.z = Math.random() * Math.PI * 2;
             leaf.position.set(cx, yPos + Math.random() * 0.5, cz);
 
-            // 叶脉：从中心向外均匀发散360°
+            // Veins: radiate evenly from center across 360°
             const veinsGroup = new THREE.Group();
             const veinCount = interactive ? 14 : 6;
             for (let v = 0; v < veinCount; v++) {
                 const veinAngle = (v / veinCount) * Math.PI * 2;
-                // 终点在叶缘
+                // End point at leaf edge
                 const endX = Math.cos(veinAngle) * radius * 0.88;
                 const endZ = Math.sin(veinAngle) * radius * 0.88;
-                // 中间点微弯
+                // Midpoint with slight bend
                 const midR = radius * 0.45;
                 const midX = Math.cos(veinAngle + (Math.random() - 0.5) * 0.15) * midR;
                 const midZ = Math.sin(veinAngle + (Math.random() - 0.5) * 0.15) * midR;
@@ -480,7 +463,7 @@ function createLotusLeaves() {
                 veinsGroup.add(new THREE.Line(veinGeo, veinMat));
             }
             veinsGroup.rotation.x = -Math.PI / 2;
-            veinsGroup.rotation.z = leaf.rotation.z; // 跟随荷叶旋转
+            veinsGroup.rotation.z = leaf.rotation.z; // follow leaf rotation
             veinsGroup.position.copy(leaf.position);
             scene.add(veinsGroup);
             scene.add(leaf);
@@ -500,11 +483,11 @@ function createLotusLeaves() {
     }
 }
 
-// --- 2e. 水草 (多层：近处大丛可交互，远处小丛做背景) ---
+// --- 2e. Seaweed (multi-layer: near large clumps interactive, far small clumps decorative) ---
 function createWeeds() {
-    // 近景大水草（可交互）：高且粗，靠近
-    // 中景水草：中等
-    // 远景小水草（纯装饰）：矮小、半透明
+    // Near: large interactive seaweed, tall and thick
+    // Mid: medium seaweed
+    // Far: small decorative seaweed, short and translucent
     const layers = [
         { count: 5, heightMin: 6, heightMax: 12, stalkMin: 3, stalkMax: 5, thickness: 0.08, distMin: 3,  distMax: 12, opac: 0.8, interactive: true },
         { count: 5, heightMin: 3, heightMax: 7,  stalkMin: 2, stalkMax: 4, thickness: 0.05, distMin: 10, distMax: 22, opac: 0.55, interactive: false },
@@ -542,7 +525,7 @@ function createWeeds() {
                 group.add(stalk);
                 stalks.push({ mesh: stalk, points: points, curve: curve, height: height });
 
-                // 叶片（近处更多叶片）
+                // Leaf blades (more leaves on near seaweed)
                 const leafChance = layer.interactive ? 0.6 : 0.3;
                 if (Math.random() < leafChance) {
                     const leafW = (layer.interactive ? 0.6 : 0.3) + Math.random() * 0.4;
@@ -587,7 +570,7 @@ function createWeeds() {
     });
 }
 
-// --- 2f. 气泡 (微小漂浮粒子) ---
+// --- 2f. Bubbles (tiny floating particles) ---
 function createBubbles() {
     const bubbleCount = 40;
     const positions = new Float32Array(bubbleCount * 3);
@@ -609,10 +592,33 @@ function createBubbles() {
     const bubbles = new THREE.Points(geo, mat);
     scene.add(bubbles);
     scene.userData.bubbles = bubbles;
+
+    // Interaction bubble pool (spawned when fish get scared)
+    const interBubbleCount = 30;
+    const ibPositions = new Float32Array(interBubbleCount * 3);
+    const ibGeo = new THREE.BufferGeometry();
+    ibGeo.setAttribute('position', new THREE.BufferAttribute(ibPositions, 3));
+    const ibMat = new THREE.PointsMaterial({
+        color: 0xccffff,
+        size: 0.2,
+        transparent: true,
+        opacity: 0.6,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+    });
+    const interBubbles = new THREE.Points(ibGeo, ibMat);
+    scene.add(interBubbles);
+    scene.userData.interBubbles = interBubbles;
+    // Each bubble has: active flag, velocity, life
+    scene.userData.interBubbleData = [];
+    for (let i = 0; i < interBubbleCount; i++) {
+        scene.userData.interBubbleData.push({ active: false, vx: 0, vy: 0, vz: 0, life: 0 });
+        ibPositions[i * 3 + 1] = -100; // hide offscreen
+    }
 }
 
 // ============================================================
-//  3. 摄像头 + ml5 初始化
+//  3. Webcam + ml5 initialization
 // ============================================================
 async function initWebcam() {
     video = document.getElementById('webcam');
@@ -621,20 +627,20 @@ async function initWebcam() {
         video.srcObject = stream;
         await new Promise(r => { video.onloadedmetadata = r; });
     } catch (e) {
-        statusEl.innerText = '无法访问摄像头，请检查权限。';
+        statusEl.innerText = 'Cannot access webcam. Please check permissions.';
         console.error(e);
     }
 }
 
 function initMl5() {
-    // ml5 只负责 facemesh
+    // ml5 handles facemesh only
     faceMesh = ml5.facemesh(video, () => {
         isFaceReady = true;
         checkReady();
     });
     faceMesh.on('predict', r => { facePredictions = r; });
 
-    // MediaPipe Hands 负责双手检测
+    // MediaPipe Hands handles dual hand detection
     const mpHands = new Hands({
         locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
     });
@@ -652,7 +658,7 @@ function initMl5() {
         }
     });
 
-    // 持续送帧给 MediaPipe
+    // Continuously feed frames to MediaPipe
     async function feedHands() {
         if (video.readyState >= 2) {
             try { await mpHands.send({ image: video }); } catch(e) {}
@@ -673,7 +679,7 @@ function checkReady() {
 }
 
 // ============================================================
-//  4. 主动画循环
+//  4. Main animation loop
 // ============================================================
 function animate() {
     requestAnimationFrame(animate);
@@ -692,15 +698,15 @@ function animate() {
     renderer.render(scene, camera);
 }
 
-// --- 4a. 头部追踪 → 水平平移相机（不旋转） ---
-// 防抖策略：EMA平滑ratio → 死区过滤微小变化 → 缓慢lerp输出
+// --- 4a. Head tracking → horizontal camera panning (no rotation) ---
+// Stabilization: EMA smooth ratio → dead zone filter → slow lerp output
 const MAX_PAN_DISTANCE = 12;
 let currentPanX = 0;
-let smoothedRatio = 0;       // EMA 平滑后的原始ratio
-let lockedPanX = 0;          // 当前锁定的目标位置
-const DEAD_ZONE = 0.015;     // ratio变化小于此值时不更新目标
-const EMA_ALPHA = 0.12;      // ratio的指数移动平均系数（越小越平滑）
-const PAN_LERP = 0.01;       // 最终位置插值速度（很慢，稳定）
+let smoothedRatio = 0;       // EMA-smoothed raw ratio
+let lockedPanX = 0;          // current locked target position
+const DEAD_ZONE = 0.015;     // ignore ratio changes smaller than this
+const EMA_ALPHA = 0.12;      // EMA coefficient for ratio (smaller = smoother)
+const PAN_LERP = 0.01;       // final position lerp speed (very slow, stable)
 
 function updateHeadTracking(t) {
     if (!isFaceReady || facePredictions.length === 0) return;
@@ -712,51 +718,51 @@ function updateHeadTracking(t) {
     const distR = dist2D(nose[0], nose[1], rightEye[0], rightEye[1]);
     const rawRatio = (distL - distR) / (distL + distR);
 
-    // 1. EMA 平滑原始信号（消除帧间噪声）
+    // 1. EMA smooth the raw signal (remove frame-to-frame noise)
     smoothedRatio += (rawRatio - smoothedRatio) * EMA_ALPHA;
 
-    // 2. 映射到目标平移量
+    // 2. Map to target pan amount
     const mappedTarget = clamp(
         mapRange(smoothedRatio, 0.2, -0.2, -MAX_PAN_DISTANCE, MAX_PAN_DISTANCE),
         -MAX_PAN_DISTANCE, MAX_PAN_DISTANCE
     );
 
-    // 3. 死区：只有当目标变化超过阈值时才更新锁定位置
+    // 3. Dead zone: only update locked position when change exceeds threshold
     const panDelta = Math.abs(mappedTarget - lockedPanX);
     if (panDelta > DEAD_ZONE * MAX_PAN_DISTANCE * 2) {
-        // 变化足够大，更新目标（但也用 lerp 而不是直接跳）
+        // Change large enough, update target (still using lerp, not jumping)
         lockedPanX += (mappedTarget - lockedPanX) * 0.15;
     }
 
-    // 4. 最终输出：非常缓慢地趋近锁定位置
+    // 4. Final output: very slowly approach locked position
     currentPanX += (lockedPanX - currentPanX) * PAN_LERP;
     cameraGroup.position.x = currentPanX;
 
-    debugEl.innerHTML += `平移: ${currentPanX.toFixed(1)} / ±${MAX_PAN_DISTANCE}`;
+    debugEl.innerHTML += `Pan: ${currentPanX.toFixed(1)} / ±${MAX_PAN_DISTANCE}`;
 }
 
-// --- 4b. 手部追踪 + 双手轮廓绘制 (MediaPipe Hands) ---
-// MediaPipe 坐标是归一化的 (0~1)，x右y下z深(离摄像头近=负)
-// 仰卧视角映射：
-//   MP x (0→1) → 3D X: 不翻转（摄像头本身是镜像的，正好抵消）
-//   MP y (0→1) → 3D Z: 翻转（摄像头上方=世界远处）
-//   MP z → 3D Y高度偏移：离摄像头越近(z越负)→手越伸长→在水底世界离你越远→画得越小
+// --- 4b. Hand tracking + dual hand outline rendering (MediaPipe Hands) ---
+// MediaPipe coords are normalized (0~1), x-right y-down z-depth (closer to cam = negative)
+// Supine perspective mapping:
+//   MP x (0→1) → 3D X: not flipped (camera is already mirrored, cancels out)
+//   MP y (0→1) → 3D Z: flipped (camera top = world far)
+//   MP z → 3D Y offset: closer to cam (z more negative) → arm more extended → further in underwater world → draw smaller
 function mpToWorld(lm) {
-    // 镜像X：摄像头画面左右是反的，所以 x: 1→-15, 0→15
+    // Mirror X: webcam is horizontally flipped, so x: 1→-15, 0→15
     const x = mapRange(lm.x, 0, 1, 15, -15);
     const z = mapRange(lm.y, 0, 1, 12, -12);
     const y = 10 + (lm.z || 0) * -8;
     return { x, y, z };
 }
 
-// 手的缩放：用整只手最左和最右关键点的水平距离 a
-// a 越大（手在画面中展得越开）→ 实际画出来越小
+// Hand scale: using horizontal distance a between leftmost and rightmost keypoints
+// a larger (hand appears wider on camera) → draw smaller in scene
 function getHandScale(landmarks, handIndex) {
-    // 用手腕(0)到中指根(9)的距离——手掌骨骼长度，不随手指张合变化
+    // Wrist(0) to middle finger base(9) distance — skeletal palm length, invariant to finger pose
     const wrist = landmarks[0], midBase = landmarks[9];
     const a = Math.sqrt((wrist.x - midBase.x) ** 2 + (wrist.y - midBase.y) ** 2);
-    const scale = Math.max(mapRange(a, 0.05, 0.15, 1.2, 0.6), 0.5);
-    debugEl.innerHTML += `<br>手${handIndex}: a=${a.toFixed(3)} scale=${scale.toFixed(2)}`;
+    const scale = Math.max(mapRange(a, 0.04, 0.1, 1.2, 0.4), 0.4);
+    debugEl.innerHTML += `<br>Hand${handIndex}: a=${a.toFixed(3)} scale=${scale.toFixed(2)}`;
     return scale;
 }
 
@@ -783,7 +789,7 @@ function updateHandTracking(t) {
             continue;
         }
 
-        const landmarks = hands[h]; // 21个点，每个 {x, y, z}
+        const landmarks = hands[h]; // 21 points, each {x, y, z}
         const palm = landmarks[9];
         const palmWorld = mpToWorld(palm);
 
@@ -791,18 +797,18 @@ function updateHandTracking(t) {
             new THREE.Vector3(palmWorld.x, palmWorld.y, palmWorld.z), 0.15
         );
 
-        // 手的缩放比例
+        // Hand scale ratio
         const handScale = getHandScale(landmarks, h);
 
-        // --- 绘制手的轮廓线 ---
+        // --- Draw hand outline ---
         const lineMesh = handLineMeshes[h];
         if (lineMesh && landmarks.length >= 21) {
             lineMesh.visible = true;
             const positions = lineMesh.geometry.attributes.position;
 
-            // 用已平滑的掌心世界坐标作为锚点（不受缩放影响）
+            // Use smoothed palm world coords as anchor (unaffected by scale)
             const cw = handWorldPositions[h];
-            // 归一化用的手宽度
+            // Hand width for normalization
             let _minX = Infinity, _maxX = -Infinity;
             for (let k = 0; k < landmarks.length; k++) {
                 if (landmarks[k].x < _minX) _minX = landmarks[k].x;
@@ -813,11 +819,11 @@ function updateHandTracking(t) {
 
             for (let i = 0; i < handArray.length; i++) {
                 const lm = landmarks[handArray[i]];
-                // 归一化偏移（除以a消除距离差异）
+                // Normalized offset (divide by a to cancel distance difference)
                 const ndx = (lm.x - palm.x) / a;
                 const ndy = (lm.y - palm.y) / a;
                 const ndz = ((lm.z || 0) - (palm.z || 0)) / a;
-                // 以平滑掌心为中心，只缩放手的形状，不影响两手间距离
+                // Scale hand shape around smoothed palm center, without affecting inter-hand distance
                 const sx = cw.x + ndx * handScale * worldSize * -1;
                 const sy = cw.y + ndz * handScale * worldSize * -0.5;
                 const sz = cw.z + ndy * handScale * worldSize * -1;
@@ -829,7 +835,7 @@ function updateHandTracking(t) {
             lineMesh.material.opacity = 0.4 + Math.sin(t * 2 + h) * 0.15;
         }
 
-        // 手掌光晕（大小也跟着缩放）
+        // Palm glow (size follows hand scale)
         const glow = handGlows[h];
         if (glow) {
             glow.visible = true;
@@ -837,38 +843,39 @@ function updateHandTracking(t) {
             glow.scale.setScalar(3 * handScale);
             glow.material.opacity = 0.3 + Math.sin(t * 1.5 + h * 0.5) * 0.1;
         }
+
     }
 }
 
-// --- 4c. 鱼群 Noise 游动 + 手部交互 ---
+// --- 4c. Fish school noise swimming + hand interaction ---
 function updateFishes(t) {
     fishes.forEach(fish => {
         const g = fish.group;
 
-        // Noise 驱动的自然游动
+        // Noise-driven natural swimming
         const nx = PerlinNoise.noise(fish.noiseOffsetX + t * fish.speed, 0, 0);
         const nz = PerlinNoise.noise(0, fish.noiseOffsetZ + t * fish.speed, 0);
         const ny = PerlinNoise.noise(0, 0, fish.noiseOffsetY + t * fish.speed * 0.5);
 
-        // 基础移动
+        // Base movement
         const moveX = nx * 0.12;
         const moveZ = nz * 0.12;
         const moveY = ny * 0.03;
 
-        // 推力衰减
+        // Push force decay
         fish.pushVelocity.multiplyScalar(fish.pushDecay);
         g.position.x += moveX + fish.pushVelocity.x;
         g.position.z += moveZ + fish.pushVelocity.z;
         g.position.y = fish.baseY + ny * 2 + fish.pushVelocity.y;
 
-        // 边界限制
+        // Boundary limits
         const maxDist = 35;
         if (g.position.x > maxDist) g.position.x = maxDist;
         if (g.position.x < -maxDist) g.position.x = -maxDist;
         if (g.position.z > maxDist) g.position.z = maxDist;
         if (g.position.z < -maxDist) g.position.z = -maxDist;
 
-        // 朝向游动方向
+        // Face swimming direction
         const facing = Math.atan2(moveZ + fish.pushVelocity.z, moveX + fish.pushVelocity.x);
         g.rotation.y += (facing - g.rotation.y) * 0.05;
 
@@ -897,36 +904,40 @@ function updateFishes(t) {
                         dz / dist * force
                     );
                     fish.scared = Math.min(fish.scared + 0.3, 1.0);
+                    // Spawn bubbles at fish position when startled
+                    if (fish.scared > 0.5 && Math.random() < 0.3) {
+                        spawnInterBubbles(g.position.x, g.position.y, g.position.z, 3);
+                    }
                 }
             }
         }
     });
 }
 
-// --- 4d. 荷叶漂浮 + 手部交互 ---
+// --- 4d. Lotus leaf drifting + hand interaction ---
 function updateLotusLeaves(t) {
     lotusLeaves.forEach(leaf => {
         const m = leaf.mesh;
 
-        // Noise 驱动微漂
+        // Noise-driven gentle drift
         const driftX = PerlinNoise.noise(leaf.noiseOffset + t * 0.1, 0) * 0.02;
         const driftZ = PerlinNoise.noise(0, leaf.noiseOffset + t * 0.1) * 0.02;
         const bob = PerlinNoise.noise(leaf.noiseOffset, t * 0.3) * 0.3;
 
-        // 推力衰减
+        // Push force decay
         leaf.pushVelocity.multiplyScalar(leaf.pushDecay);
         m.position.x = leaf.baseX + driftX + leaf.pushVelocity.x;
         m.position.z = leaf.baseZ + driftZ + leaf.pushVelocity.z;
         m.position.y = leaf.baseY + bob;
 
-        // 轻微旋转
+        // Slight rotation
         m.rotation.z = PerlinNoise.noise(leaf.noiseOffset + 50, t * 0.2) * 0.1;
 
-        // 叶脉跟随
+        // Veins follow leaf
         leaf.veins.position.copy(m.position);
         leaf.veins.rotation.z = m.rotation.z;
 
-        // 手部交互：只有近景大荷叶可交互
+        // Hand interaction: only near large leaves are interactive
         if (handActive && leaf.interactive) {
             for (let h = 0; h < activeHandCount; h++) {
                 const hp = handWorldPositions[h];
@@ -942,24 +953,24 @@ function updateLotusLeaves(t) {
             }
         }
 
-        // 漂移积累回到基础位置
+        // Drift accumulation returns to base position
         leaf.baseX += (leaf.mesh.position.x - leaf.baseX) * 0.001;
         leaf.baseZ += (leaf.mesh.position.z - leaf.baseZ) * 0.001;
     });
 }
 
-// --- 4e. 水草摇曳 + 手部交互 ---
+// --- 4e. Seaweed swaying + hand interaction ---
 function updateWeeds(t) {
     weeds.forEach(weed => {
         const g = weed.group;
 
-        // Noise 驱动自然摇摆
+        // Noise-driven natural swaying
         const sway = PerlinNoise.noise(weed.noiseOffset + t * 0.3, 0) * 0.15;
 
-        // 手推力衰减
+        // Hand push force decay
         weed.pushStrength *= weed.pushDecay;
 
-        // 综合弯曲
+        // Combined bending
         const totalBend = sway + weed.pushStrength * Math.sin(weed.pushAngle);
         const totalBendZ = PerlinNoise.noise(0, weed.noiseOffset + t * 0.25) * 0.08
                           + weed.pushStrength * Math.cos(weed.pushAngle);
@@ -967,7 +978,7 @@ function updateWeeds(t) {
         g.rotation.x = totalBendZ;
         g.rotation.z = totalBend;
 
-        // 手部交互：只有近景大水草可交互
+        // Hand interaction: only near large seaweed is interactive
         if (handActive && weed.interactive) {
             for (let h = 0; h < activeHandCount; h++) {
                 const hp = handWorldPositions[h];
@@ -983,20 +994,20 @@ function updateWeeds(t) {
     });
 }
 
-// --- 4f. God Rays 动画 ---
+// --- 4f. God Rays animation ---
 function updateGodRays(t) {
     godRays.forEach(ray => {
-        // 呼吸般的明暗变化
+        // Breathing-like brightness variation
         const flicker = PerlinNoise.noise(ray.phase + t * ray.speed, 0);
         ray.mesh.material.opacity = ray.baseOpacity * (0.5 + flicker * 0.7);
 
-        // 轻微横移
+        // Slight lateral drift
         ray.mesh.position.x = ray.baseX + Math.sin(t * 0.2 + ray.phase) * 0.5;
         ray.mesh.position.z = ray.baseZ + Math.cos(t * 0.15 + ray.phase) * 0.5;
     });
 }
 
-// --- 4g. 水面波动 ---
+// --- 4g. Water surface waves ---
 function updateWaterSurface(t) {
     const surface = scene.userData.waterSurface;
     if (!surface) return;
@@ -1011,7 +1022,7 @@ function updateWaterSurface(t) {
     positions.needsUpdate = true;
 }
 
-// --- 4h. 气泡上浮 ---
+// --- 4h. Bubbles rising ---
 function updateBubbles(t) {
     const bubbles = scene.userData.bubbles;
     if (!bubbles) return;
@@ -1022,14 +1033,54 @@ function updateBubbles(t) {
         y += 0.01 + Math.random() * 0.01;
         if (y > 26) y = -2;
         positions.setY(i, y);
-        // 轻微水平晃动
+        // Slight horizontal drift
         positions.setX(i, positions.getX(i) + (Math.random() - 0.5) * 0.02);
     }
     positions.needsUpdate = true;
+
+    // Update interaction bubbles
+    const ib = scene.userData.interBubbles;
+    if (!ib) return;
+    const ibPos = ib.geometry.attributes.position;
+    const ibData = scene.userData.interBubbleData;
+    for (let i = 0; i < ibData.length; i++) {
+        const d = ibData[i];
+        if (!d.active) continue;
+        d.life -= 0.016;
+        if (d.life <= 0) {
+            d.active = false;
+            ibPos.setXYZ(i, 0, -100, 0); // hide
+        } else {
+            ibPos.setX(i, ibPos.getX(i) + d.vx);
+            ibPos.setY(i, ibPos.getY(i) + d.vy);
+            ibPos.setZ(i, ibPos.getZ(i) + d.vz);
+            d.vy += 0.003; // float upward
+        }
+    }
+    ibPos.needsUpdate = true;
+}
+
+// Spawn a burst of interaction bubbles at a position
+function spawnInterBubbles(x, y, z, count) {
+    const ibPos = scene.userData.interBubbles?.geometry.attributes.position;
+    const ibData = scene.userData.interBubbleData;
+    if (!ibPos || !ibData) return;
+    let spawned = 0;
+    for (let i = 0; i < ibData.length && spawned < count; i++) {
+        if (!ibData[i].active) {
+            ibData[i].active = true;
+            ibData[i].life = 0.8 + Math.random() * 0.6;
+            ibData[i].vx = (Math.random() - 0.5) * 0.15;
+            ibData[i].vy = 0.03 + Math.random() * 0.05;
+            ibData[i].vz = (Math.random() - 0.5) * 0.15;
+            ibPos.setXYZ(i, x + (Math.random() - 0.5) * 1, y, z + (Math.random() - 0.5) * 1);
+            spawned++;
+        }
+    }
 }
 
 // ============================================================
-//  工具函数
+//  Utility functions
 // ============================================================
 function dist2D(x1, y1, x2, y2) {
     return Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
