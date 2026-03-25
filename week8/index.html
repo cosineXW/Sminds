@@ -322,11 +322,11 @@ function createFishes() {
             side: THREE.DoubleSide
         });
         const tail = new THREE.Mesh(tailGeo, tailMat);
-        // pivot就是顶点A=原点，放在鱼身末端
+        // Pivot is vertex A = origin, placed at the body's tail end
         tail.position.x = -0.85;
         group.add(tail);
 
-        // 鱼鳍
+        // Dorsal fin
         const finGeo = new THREE.PlaneGeometry(0.5, 0.3);
         const finMat = new THREE.MeshPhongMaterial({
             color: bodyColor.clone().multiplyScalar(0.9),
@@ -339,7 +339,7 @@ function createFishes() {
         fin.rotation.x = 0.3;
         group.add(fin);
 
-        // 随机初始位置（留足间距）
+        // Random initial position (with ample spacing)
         const angle = (i / fishCount) * Math.PI * 2 + (Math.random() - 0.5) * 0.5;
         const dist = 8 + Math.random() * 15;
         group.position.set(
@@ -651,11 +651,11 @@ function initMl5() {
 
 function checkReady() {
     if (isFaceReady && isHandReady) {
-        statusEl.innerText = '水底世界已激活！';
+        statusEl.innerText = 'underwater！';
     } else if (isFaceReady) {
-        statusEl.innerText = '面部已就绪，等待手部模型...';
+        statusEl.innerText = 'facemesh wait for handpose...';
     } else if (isHandReady) {
-        statusEl.innerText = '手部已就绪，等待面部模型...';
+        statusEl.innerText = 'handpose wait for facemesh...';
     }
 }
 
